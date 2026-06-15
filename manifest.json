@@ -20,7 +20,8 @@
     {
       "matches": [
         "https://smartsitter.jp/parent/message_rooms*",
-        "https://smartsitter.jp/parent/sitting/issues/new*"
+        "https://smartsitter.jp/parent/sitting/issues/new*",
+        "https://smartsitter.jp/parent/sitting/issues/*"
       ],
       "js": ["src/content.js"],
       "run_at": "document_idle"

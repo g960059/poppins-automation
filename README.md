@@ -6,12 +6,15 @@
 
 - **申請予約キュー（永続）**。候補を「予約に入れる／追跡に追加」で `applyQueue` に保存。2か月超の予定も保持し、申請可能日になったら拾う。
 - **申請可能の通知（Phase 2）**。`chrome.alarms`（既定6時間ごと、Chrome起動中に発火）で予約を点検し、`今日+2か月`の窓に入った予定を Chrome 通知でお知らせ（`deferred → ready`）。
-- **申請後の状態追跡（Level 3）**。`/parent/issues` を照合してキュー各件の状態（`見積り待ち / 要対応 / 確定 / キャンセル`）と issueId を更新。**「要対応（見積もり到着）」になったら24時間以内の確定を促す通知**。
+- **申請後の状態追跡（Level 3）**。`/parent/issues` を最大5ページまで照合し、キュー各件の状態（`見積り待ち / シッター対応待ち / 要対応・承認待ち / 確定 / キャンセル`）と issueId を更新。**「要対応（見積もり到着）」になったら24時間以内の確定を促す通知**。
+- **送信後の詳細ページ追跡**。`/parent/sitting/issues/{id}` を開いた時点で content script が依頼詳細を読み、該当するキューを即時更新（フォームを開いただけでは申請済みにしない）。
+- **申請フォームの実DOM検証**。`pendingApply` と URL だけでなく、フォーム上の `#issue_date / #js-start-at / #js-end-at / #sitter_public_id` も照合。不一致・取得不可なら赤い警告を出して自動入力を止める。
+- **月末日の2か月計算を安全化**。`1/31 + 2か月` のようなケースで月があふれないよう、月末にクランプする。
 - **状態更新の2経路**：side panel の「予約・状態を更新」（SmartSitterタブがあれば同一オリジンで取得＝確実）と、バックグラウンドの定期取得（タブ不要の認証付き取得＋offscreen文書でHTMLパース）。
 - 申請タブに**予約・追跡一覧**を追加（要確定 / 申請可能 / 予約中 / 申請済み・見積り待ち / 確定 / キャンセル）。各件に「フォームに入力 / 依頼を開く / 削除」。
 - manifest 権限に `alarms / notifications / offscreen` を追加。`src/offscreen.{html,js}` を追加（service worker に DOMParser が無いため、一覧HTMLのパースだけをoffscreen文書で実施）。
 
-> 注: 一覧ステータスのキーワード判定（特に「要対応＝保護者の確定が必要」）は、実データに合わせて `classifyIssueStatus` の調整が必要な場合があります。バックグラウンドの認証付き取得が失敗しても、SmartSitterタブを開いた状態の「予約・状態を更新」で確実に追跡できます。
+> 注: 一覧ステータスのキーワード判定は、実データに合わせて `classifyIssueStatus` の追加調整が必要な場合があります。バックグラウンドの認証付き取得が失敗しても、SmartSitterタブを開いた状態の「予約・状態を更新」で追跡できます。
 
 ## v0.5 の主な変更（申請アシスタント Level 1–2）
 
@@ -22,7 +25,7 @@
 - **Level 2：実フォーム自動入力**。「フォームに入力」で `/parent/sitting/issues/new?date=&start=&end=&sitter_id=` を開き（住所・子ども・料金はSmartSitter側が補完）、「今回伝えておきたいこと」を下書き、**送信はあなたが実フォームで実行**。拡張は `#js-submit-button` を自動クリックしない。
 - **申請フォームに確認バナー**を表示（予定の要約、`前回交通費と同じなら見積もり不要`がONなら警告、送信は手動である旨）。
 - **sitter_id の解決**：メッセージ室には申請用 `sitter_id` が無いため、プロフィールページから解決して `profileId` をキーに記憶（取得できなければ一度だけURLを貼付け）。以後は自動。
-- content script の注入対象に申請フォーム（`/parent/sitting/issues/new*`）を追加。storage allowlist に `applyQueue / pendingApply / sitterid:*` を追加。
+- content script の注入対象に申請フォーム（`/parent/sitting/issues/new*`）と申請詳細（`/parent/sitting/issues/{id}`）を追加。storage allowlist に `applyQueue / pendingApply / sitterid:*` を追加。
 
 ### 申請の安全則（v0.5）
 
@@ -32,6 +35,7 @@
 - 一括申請はしない（1件ずつ実フォームで確認）。LLMは抽出・分類のみ、実行判断はルール＋人。
 - 申請後は `見積り待ち → 見積もり確認 → 依頼確定` と進む（保護者の確定が別途必要）。v0.6 ではこの後段を `applyQueue` と `/parent/issues` 照合で追跡する。
 - フォームを開いただけでは `applied` にしない。実際の依頼一覧に同一シッター・同一日・同一時間の依頼が見つかった時だけ申請済みとして扱う。
+- 実フォーム上の日付・開始時刻・終了時刻・シッターIDが `pendingApply` と一致確認できない場合、自動入力を止める。URLと画面表示がずれた状態を信頼しない。
 
 ## v0.4 の主な変更（UI/UX改善）
 
@@ -98,8 +102,8 @@
 | `memory:{id}` | roomSummary / sitterFacts / pendingSchedule |
 | `sittingsCache` | 履歴+予定のパース結果（10分キャッシュ） |
 | `sitterid:{profileId}` | 申請用 `sitter_id`（プロフィールページ解決 or 手動貼付け） |
-| `pendingApply` | 申請フォームへの受け渡し（日時・シッター・下書き文。フォーム到達で消費） |
-| `applyQueue` | 申請キュー（予約・追跡。`deferred/ready/applied/needs_confirm/booked/canceled`） |
+| `pendingApply` | 申請フォームへの受け渡し（日時・シッター・申請用ID・下書き文。フォーム実DOMとの一致確認後に消費） |
+| `applyQueue` | 申請キュー（予約・追跡。`deferred/ready/applied/needs_confirm/booked/canceled`。取れる場合は profileId / applicationSitterId / sitterPublicId / issueId も保持） |
 
 storage は信頼コンテキスト限定。content script は background 経由でallowlist化されたキーだけ読み書きし、`settings` を読む場合も APIキー / Googleトークン / トークン期限は除外される。Google Calendarの接続状態表示はside panel側で判定する。ページや第三者スクリプトから秘密情報へは到達しない。
 
@@ -114,10 +118,11 @@ npm test
 - `manifest.json` が MV3 として読め、参照先ファイルが存在すること。
 - `background.js` / `content.js` / `settings.js` が JS 構文エラーなしで読めること。
 - content script が `chrome.storage.local` を直接読まないこと。
-- content script の注入対象がメッセージ室だけであること。
+- content script の注入対象がメッセージ室・申請フォーム・申請詳細に限定されていること。
 - side panel に作成・シッター・設定タブがあること。
 - 宛先ズレ防止の `expectedContext`、既存入力保護、作成タブの警告/文脈ステータス表示が実装されていること。
 - OpenRouter structured outputs、storage read/write allowlist、side panel自動更新の退行検知があること。
+- 申請フォームの実DOM照合、申請詳細ページ注入、一覧ページネーション、月末日クランプ計算の退行検知があること。
 - 秘密情報フィルタ、メモリ候補、Poppins主要セレクタが実装内に存在すること。
 
 ## セキュリティ注意
@@ -139,4 +144,6 @@ npm test
 ## 検証済みセレクタ
 
 - メッセージ室: `#js-charter-chat-messages > .balloon6`(相手) / `.mycomment`(自分), `.send-at`, `.nav-title`, `a.profile_button[href*="/sitter/profile/{id}"]`, `#js-message-text-area`, `#js-message-submit-button`
-- 一覧/履歴（同一構造）: `.requested-item` → `a[href*="/parent/issues/{id}"]`, `.requested-sitter-name`, `.requested-item-name`(×2), `.requested-item-sitting-type`, `.requested-item-status em`(class: booked/charged/canceled), ページャ `.SS-pagination__next a`
+- 一覧/履歴（同一構造）: `.requested-item` → `a[href*="/parent/issues/{id}"]` or `a[href*="/parent/sitting/issues/{id}"]`, `.requested-sitter-name`, `.requested-item-name`(×2), `.requested-item-sitting-type`, `.requested-item-status em`(class: booked/charged/canceled), ページャ `.SS-pagination__next a`
+- 申請フォーム: `#issue_date`, `#js-start-at`, `#js-end-at`, `#sitter_public_id`, `textarea[name="issue[description]"]`, `#issue_auto_book_transport_fee`, `#js-submit-button`
+- 申請詳細: `/parent/sitting/issues/{id}` の本文・ステータス表示・シッタープロフィールリンク。実HTML fixture はSmartSitter側の画面HTMLを採取できたタイミングで追加する。

@@ -415,7 +415,11 @@ function isoToUtc(iso) {
   const m = /(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
   return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
 }
-function addMonthsUtc(d, n) { const x = new Date(d); x.setUTCMonth(x.getUTCMonth() + n); return x; }
+function addMonthsUtc(d, n) {
+  const first = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), Math.min(d.getUTCDate(), last)));
+}
 function fmtSlash(d) { return `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`; }
 function fmtJp(d) { const wd = ['日', '月', '火', '水', '木', '金', '土'][d.getUTCDay()]; return `${d.getUTCMonth() + 1}/${d.getUTCDate()}(${wd})`; }
 const hhmmCompact = (t) => (t || '').replace(':', '');
@@ -569,9 +573,11 @@ async function openApplyForm(spec, opts = {}) {
     + `&start=${hhmmCompact(spec.startTime)}&end=${hhmmCompact(spec.endTime)}`
     + '&issue_type=sitting&include_interview=false'
     + `&sitter_id=${sitterId}`;
+  spec.applicationSitterId = sitterId;
+  spec.sitterId = sitterId;
   await chrome.storage.local.set({
     pendingApply: {
-      sitterId, date: spec.date,
+      profileId: spec.profileId, sitterId, applicationSitterId: sitterId, date: spec.date,
       start: hhmmCompact(spec.startTime), end: hhmmCompact(spec.endTime),
       description: buildDescription(spec), sitterName: spec.sitterName, createdAt: Date.now()
     }
@@ -605,14 +611,16 @@ async function upsertQueueItem(spec, status) {
   const q = await loadQueue();
   const key = qkey(spec.profileId, spec.date, hhmmCompact(spec.startTime));
   const now = Date.now();
+  const existing = q.find((x) => x.key === key);
   const base = {
     key, profileId: spec.profileId, sitterName: spec.sitterName,
+    applicationSitterId: spec.applicationSitterId || spec.sitterId || existing?.applicationSitterId || '',
+    sitterPublicId: spec.sitterPublicId || existing?.sitterPublicId || '',
     date: spec.date, start: hhmmCompact(spec.startTime), end: hhmmCompact(spec.endTime),
     startTime: spec.startTime, endTime: spec.endTime,
     decision: spec.decision || '', evidence: spec.evidence || '', updatedAt: now
   };
   const rank = { deferred: 0, ready: 1, applied: 2, needs_confirm: 3, booked: 4, canceled: 4 };
-  const existing = q.find((x) => x.key === key);
   if (existing) {
     Object.assign(existing, base);
     if ((rank[status] ?? 0) >= (rank[existing.status] ?? 0)) existing.status = status;
@@ -716,6 +724,7 @@ async function refreshQueueStatuses() {
     const res = await chrome.runtime.sendMessage({ type: 'apply_poll', payload: { items } });
     await renderQueue();
     if (!res?.ok) throw new Error(res?.error || '更新に失敗');
+    warnings = [...warnings, ...(res.warnings || [])];
     if (warnings.length) {
       $('applyWarn').hidden = false;
       $('applyWarn').textContent = warnings.join('\n');
