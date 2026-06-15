@@ -489,7 +489,17 @@
     if (!submit || submit.parentElement.querySelector('#poppins-oneclick')) return;
     const btn = document.createElement('button');
     btn.id = 'poppins-oneclick'; btn.type = 'button'; btn.textContent = 'AI下書き';
-    btn.style.cssText = 'margin-left:8px;background:#16707a;color:#fff;border:none;border-radius:6px;padding:8px 12px;font-weight:600;cursor:pointer;';
+    btn.style.cssText = [
+      'margin-left:8px',
+      'background:#176f76',
+      'color:#fff',
+      'border:1px solid #0f555c',
+      'border-radius:8px',
+      'padding:8px 12px',
+      'font-weight:700',
+      'cursor:pointer',
+      'box-shadow:0 3px 10px rgba(23,111,118,.18)'
+    ].join(';');
     btn.addEventListener('click', async () => {
       btn.disabled = true; const o = btn.textContent; btn.textContent = '生成中…';
       try {

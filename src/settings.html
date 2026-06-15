@@ -5,82 +5,228 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>返信アシスタント</title>
 <style>
-  :root { color-scheme: light; }
+  :root {
+    color-scheme: light;
+    --bg: #f7f8f6;
+    --panel: #ffffff;
+    --panel-soft: #fbfcfa;
+    --ink: #182322;
+    --muted: #687471;
+    --faint: #8c9693;
+    --line: #dde4e1;
+    --line-strong: #c7d2cf;
+    --accent: #176f76;
+    --accent-deep: #0f555c;
+    --accent-soft: #e7f3f1;
+    --warn: #8a5a00;
+    --warn-bg: #fff7e6;
+    --warn-line: #ecd59c;
+    --danger: #9b3128;
+    --danger-bg: #fff0ee;
+    --shadow: 0 1px 2px rgba(15, 32, 30, .04), 0 10px 28px rgba(15, 32, 30, .07);
+  }
   * { box-sizing: border-box; }
+  html, body { width: 100%; max-width: 100%; }
   body {
     margin: 0;
     padding: 0;
-    background: #fbfbf9;
-    color: #1c2426;
+    background: var(--bg);
+    color: var(--ink);
     font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif;
+    overflow-x: hidden;
   }
   .shell { min-height: 100vh; display: flex; flex-direction: column; }
-  header { padding: 14px 16px 8px; border-bottom: 1px solid #e6e3da; }
-  h1 { font-size: 16px; margin: 0; }
-  .sub { color: #6a716e; font-size: 12px; margin-top: 2px; }
-  .tabs { display: flex; border-bottom: 1px solid #e6e3da; background: #fbfbf9; position: sticky; top: 0; z-index: 2; }
-  .tab { flex: 1; padding: 10px 4px; border: none; background: none; cursor: pointer; font-size: 12px; color: #6a716e; border-bottom: 2px solid transparent; }
-  .tab.active { color: #16707a; border-bottom-color: #16707a; font-weight: 700; }
-  main { flex: 1; overflow: auto; padding: 14px; }
+  header {
+    padding: 14px 14px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand img { width: 32px; height: 32px; border-radius: 8px; box-shadow: 0 3px 10px rgba(15, 85, 92, .14); }
+  h1 { font-size: 15px; line-height: 1.2; margin: 0; letter-spacing: 0; }
+  .sub { color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(247, 248, 246, .96);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    backdrop-filter: blur(12px);
+  }
+  .tab {
+    min-width: 0;
+    min-height: 34px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .tab:hover { background: #eef3f1; color: var(--ink); }
+  .tab.active {
+    color: var(--accent-deep);
+    background: var(--panel);
+    border-color: var(--line);
+    font-weight: 700;
+    box-shadow: 0 1px 2px rgba(15, 32, 30, .05);
+  }
+  main { flex: 1; overflow: auto; overflow-x: hidden; padding: 12px; }
   .pane { display: none; }
   .pane.active { display: block; }
-  fieldset { border: 1px solid #e6e3da; border-radius: 8px; margin: 0 0 14px; padding: 12px 14px; background: #fffdf8; }
-  legend { font-size: 12px; color: #16707a; font-weight: 700; padding: 0 6px; }
-  label { display: block; font-size: 11px; color: #6a716e; margin: 10px 0 4px; }
-  textarea, input {
-    width: 100%;
-    border: 1px solid #cfd6d3;
+  .section, fieldset {
+    min-width: 0;
+    max-width: 100%;
+    border: 1px solid var(--line);
     border-radius: 8px;
-    padding: 8px 10px;
+    margin: 0 0 12px;
+    padding: 12px;
+    background: var(--panel);
+    box-shadow: 0 1px 2px rgba(15, 32, 30, .03);
+  }
+  fieldset { min-width: 0; }
+  legend { font-size: 11px; color: var(--accent-deep); font-weight: 800; padding: 0 6px; }
+  label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; font-weight: 700; }
+  textarea, input {
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    padding: 9px 10px;
     font: inherit;
-    background: #fff;
-    color: #1c2426;
+    background: var(--panel);
+    color: var(--ink);
     resize: vertical;
+    outline: none;
+    transition: border-color .12s ease, box-shadow .12s ease, background .12s ease;
+  }
+  textarea:focus, input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(23, 111, 118, .12);
   }
   input[type=checkbox] { width: auto; }
   textarea { min-height: 70px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 120px; }
-  .btn { border: none; border-radius: 8px; padding: 9px 12px; font: 700 13px/1 inherit; cursor: pointer; }
-  .btn.primary { background: #16707a; color: #fff; }
-  .btn.primary:hover { background: #0f5b63; }
-  .btn.ghost { background: #eef1ef; color: #26312e; }
-  .btn.ghost:hover { background: #e3e8e5; }
+  .actions { display: grid; grid-template-columns: minmax(0, 1fr) 76px 68px; gap: 8px; margin-top: 10px; }
+  .btn {
+    min-width: 0;
+    min-height: 36px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 9px 10px;
+    font: 800 13px/1 inherit;
+    cursor: pointer;
+    transition: transform .08s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
+  }
+  .btn:active { transform: translateY(1px); }
+  .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 5px 14px rgba(23, 111, 118, .18); }
+  .btn.primary:hover { background: var(--accent-deep); }
+  .btn.ghost { background: #eef3f1; color: #26312e; border-color: #e1e8e5; }
+  .btn.ghost:hover { background: #e4eeeb; border-color: #d2dfdc; }
   .btn:disabled { opacity: .5; cursor: default; }
-  .muted { color: #8a908d; font-size: 12px; }
-  .status { font-size: 12px; color: #3a4744; background: #eef4f3; border: 1px solid #d8e4e1; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
-  .signals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
-  .signal { border: 1px solid #e0ddd3; background: #fff; border-radius: 8px; padding: 7px 8px; min-height: 48px; }
-  .signal b { display: block; color: #6a716e; font-size: 10px; line-height: 1.2; margin-bottom: 2px; }
-  .signal span { display: block; color: #26312e; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+  .muted { color: var(--faint); font-size: 12px; }
+  .status {
+    font-size: 12px;
+    color: #27413f;
+    background: var(--accent-soft);
+    border: 1px solid #c9e1dd;
+    border-radius: 8px;
+    padding: 9px 10px;
+    margin-bottom: 10px;
+    overflow-wrap: anywhere;
+  }
+  .signals { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 12px; }
+  .signal {
+    border: 1px solid var(--line);
+    background: var(--panel-soft);
+    border-radius: 8px;
+    padding: 8px 9px;
+    min-height: 52px;
+    position: relative;
+  }
+  .signal::before {
+    content: "";
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 7px;
+    height: 7px;
+    border-radius: 99px;
+    background: #c3cbc8;
+  }
+  .signal b { display: block; color: var(--muted); font-size: 10px; line-height: 1.2; margin-bottom: 4px; }
+  .signal span { display: block; color: var(--ink); font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; padding-right: 12px; }
   .signal.ok { border-color: #c8dedb; background: #f4fbf9; }
-  .signal.warn-signal { border-color: #f0dcae; background: #fff8e8; }
-  .warn { color: #9a5b00; font-size: 12px; background: #fff6e6; border: 1px solid #f0dcae; border-radius: 8px; padding: 7px 10px; margin-top: 8px; }
-  .err { color: #a3372b; font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-  .chip { border: 1px solid #cfd6d3; background: #fff; border-radius: 999px; padding: 5px 10px; font-size: 12px; cursor: pointer; color: #26312e; }
-  .chip:hover, .chip.active { border-color: #16707a; color: #16707a; }
-  .draft { border: 1px solid #e0ddd3; background: #fff; border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
-  .draft .lbl { font-size: 11px; font-weight: 700; color: #16707a; }
-  .draft .why { font-size: 11px; color: #8a908d; margin: 2px 0 6px; }
-  .draft .text { white-space: pre-wrap; font-size: 13px; }
-  .inline-btn { border: 1px solid #16707a; color: #16707a; background: #fff; border-radius: 6px; padding: 5px 10px; font: 700 12px/1 inherit; cursor: pointer; margin: 8px 8px 0 0; }
-  .mem { border: 1px dashed #cdd6d3; border-radius: 8px; padding: 8px 10px; margin-top: 10px; }
-  .mem h5 { margin: 0 0 6px; font-size: 11px; color: #6a716e; font-weight: 700; }
-  .mem .opt { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; margin: 4px 0; color: #26312e; }
+  .signal.ok::before { background: #22826f; }
+  .signal.warn-signal { border-color: var(--warn-line); background: var(--warn-bg); }
+  .signal.warn-signal::before { background: #d59013; }
+  .warn { color: var(--warn); font-size: 12px; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 8px 10px; margin-top: 8px; overflow-wrap: anywhere; }
+  .err { color: var(--danger); font-size: 12px; margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+  .chip {
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    color: #26312e;
+    transition: background .12s ease, border-color .12s ease, color .12s ease;
+  }
+  .chip:hover, .chip.active { border-color: var(--accent); color: var(--accent-deep); background: var(--accent-soft); }
+  .draft {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 10px;
+    box-shadow: var(--shadow);
+  }
+  .draft .lbl { font-size: 11px; font-weight: 800; color: var(--accent-deep); text-transform: uppercase; letter-spacing: .04em; }
+  .draft .why { font-size: 11px; color: var(--faint); margin: 3px 0 8px; }
+  .draft .text { white-space: pre-wrap; font-size: 13px; line-height: 1.65; color: var(--ink); }
+  .inline-btn {
+    border: 1px solid var(--accent);
+    color: var(--accent-deep);
+    background: var(--panel);
+    border-radius: 7px;
+    padding: 6px 10px;
+    font: 800 12px/1 inherit;
+    cursor: pointer;
+    margin: 9px 8px 0 0;
+  }
+  .inline-btn:hover { background: var(--accent-soft); }
+  .mem { border: 1px dashed var(--line-strong); border-radius: 8px; padding: 10px; margin-top: 10px; background: #fbfcfa; }
+  .mem h5 { margin: 0 0 6px; font-size: 11px; color: var(--muted); font-weight: 800; }
+  .mem .opt { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; margin: 8px 0; color: #26312e; }
   .mem textarea { min-height: 44px; margin-top: 4px; font-size: 12px; }
   details { margin-top: 10px; }
-  summary { cursor: pointer; font-size: 12px; color: #6a716e; }
-  pre.ctx { white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; background: #23302f; color: #cfe3df; padding: 10px; border-radius: 8px; max-height: 300px; overflow: auto; }
-  .bar { position: sticky; bottom: 0; background: #fbfbf9; padding: 10px 0 0; display: flex; gap: 10px; align-items: center; }
-  code { background: #eef1ef; padding: 1px 5px; border-radius: 4px; font-size: 12px; word-break: break-all; }
+  summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  pre.ctx { white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; background: #1f2d2b; color: #d6ebe7; padding: 10px; border-radius: 8px; max-height: 300px; overflow: auto; }
+  .bar { position: sticky; bottom: 0; background: linear-gradient(to top, var(--bg) 70%, rgba(247,248,246,0)); padding: 12px 0 0; display: flex; gap: 10px; align-items: center; }
+  code { background: #eef3f1; padding: 1px 5px; border-radius: 4px; font-size: 12px; word-break: break-all; }
+  @media (max-width: 360px) {
+    .signals { grid-template-columns: 1fr; }
+    .actions { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
   <div class="shell">
     <header>
-      <h1>返信アシスタント</h1>
-      <div class="sub">SmartSitterのメッセージ室を開いた状態で使います。</div>
+      <div class="brand">
+        <img src="../assets/icon32.png" alt="">
+        <div>
+          <h1>返信アシスタント</h1>
+          <div class="sub">SmartSitterのメッセージ室から下書きを作成</div>
+        </div>
+      </div>
     </header>
 
     <div class="tabs">
@@ -98,13 +244,15 @@
           <div class="signal"><b>履歴/予定</b><span id="sigSittings">-</span></div>
           <div class="signal"><b>Google Calendar</b><span id="sigGcal">-</span></div>
         </div>
-        <div class="chips" id="chips"></div>
-        <label>意図 / 依頼（空でも文脈から判断します）</label>
-        <textarea id="intent" placeholder="例）来週火曜の代わりに翌週へ振り替えできるか丁寧に聞いて"></textarea>
-        <div class="row" style="margin-top:10px">
-          <button class="btn primary" id="generate" type="button">下書きを生成</button>
-          <button class="btn ghost" id="generateAuto" type="button">自動判断</button>
-          <button class="btn ghost" id="refreshState" type="button">再読込</button>
+        <div class="section">
+          <div class="chips" id="chips"></div>
+          <label>意図 / 依頼</label>
+          <textarea id="intent" placeholder="例）来週火曜の代わりに翌週へ振り替えできるか丁寧に聞いて"></textarea>
+          <div class="actions">
+            <button class="btn primary" id="generate" type="button">下書きを生成</button>
+            <button class="btn ghost" id="generateAuto" type="button">自動判断</button>
+            <button class="btn ghost" id="refreshState" type="button">再読込</button>
+          </div>
         </div>
         <div id="composeOut"></div>
         <details>
@@ -119,13 +267,15 @@
 
       <section class="pane" id="pane-sitter">
         <div class="status" id="sitterHead">シッター未特定</div>
-        <div class="row">
-          <div><label>呼び方（敬称）</label><input id="honorific" placeholder="例）西村様"></div>
-          <div style="max-width:110px"><label>内部優先度</label><input id="priorityRank" type="number" min="1" placeholder="1"></div>
+        <div class="section">
+          <div class="row">
+            <div><label>呼び方（敬称）</label><input id="honorific" placeholder="例）西村様"></div>
+            <div style="max-width:110px"><label>内部優先度</label><input id="priorityRank" type="number" min="1" placeholder="1"></div>
+          </div>
+          <label>個別メモ</label>
+          <textarea id="sitterNote" placeholder="例）午前希望／返信は当日中／柔らかい文面を好む"></textarea>
         </div>
-        <label>個別メモ</label>
-        <textarea id="sitterNote" placeholder="例）午前希望／返信は当日中／柔らかい文面を好む"></textarea>
-        <fieldset style="margin-top:14px">
+        <fieldset>
           <legend>記憶</legend>
           <label>会話の流れ</label><textarea id="memRoom"></textarea>
           <label>シッターの事実</label><textarea id="memFacts"></textarea>
