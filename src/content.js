@@ -140,6 +140,7 @@
   }
   // ===== 申請(システム依頼) 用ヘルパー =====
   const IS_APPLY_FORM = /^\/parent\/sitting\/issues\/new/.test(location.pathname);
+  const IS_APPLY_DETAIL = /^\/parent\/sitting\/issues\/\d+/.test(location.pathname);
   function isoToUtcDate(iso) {
     const m = /(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
     return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
@@ -149,12 +150,26 @@
     return m ? `${m[1]}/${m[2]}/${m[3]}` : '';
   }
   function addMonthsUtc(date, n) {
-    const x = new Date(date);
-    x.setUTCMonth(x.getUTCMonth() + n);
-    return x;
+    const first = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + n, 1));
+    const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+    return new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), Math.min(date.getUTCDate(), last)));
   }
   function fmtUtcSlash(d) {
     return `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+  function normalizeDateValue(s) {
+    const t = String(s || '').trim();
+    let m = t.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (!m) m = t.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+    if (!m) m = t.match(/(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/);
+    return m ? `${m[1]}/${String(m[2]).padStart(2, '0')}/${String(m[3]).padStart(2, '0')}` : '';
+  }
+  function normTimeValue(s) {
+    const t = String(s || '').trim();
+    const m = t.match(/(\d{1,2})[:：](\d{2})/);
+    if (m) return `${String(m[1]).padStart(2, '0')}${m[2]}`;
+    const digits = t.replace(/[^\d]/g, '');
+    return digits ? digits.slice(0, 4).padStart(4, '0') : '';
   }
 
   // ===== ページ判定 / シッター識別 =====
@@ -202,16 +217,22 @@
   // ===== 依頼一覧 / 履歴（同一構造・ページネーション対応） =====
   function parseRequestedItems(doc) {
     return $$('.requested-item', doc).map((it) => {
-      const a = it.querySelector('a[href*="/parent/issues/"], a[href*="/parent/histories/"], a[href*="/parent/sitting/histories/"]');
+      const a = it.querySelector('a[href*="/parent/issues/"], a[href*="/parent/sitting/issues/"], a[href*="/parent/histories/"], a[href*="/parent/sitting/histories/"]');
       const href = a?.getAttribute('href') || '';
       const issueId = ((href.match(/\/parent\/issues\/(\d+)/)
+        || href.match(/\/parent\/sitting\/issues\/(\d+)/)
         || href.match(/\/parent\/histories\/(\d+)/)
         || href.match(/\/parent\/sitting\/histories\/(\d+)/)
         || [])[1]) || '';
+      const profileHref = it.querySelector('a[href*="/sitter/profile/"]')?.getAttribute('href') || '';
+      const profileId = (profileHref.match(/\/sitter\/profile\/(\d+)/) || [])[1] || '';
+      const sitterPublicId = it.querySelector('[data-sitter-public-id]')?.getAttribute('data-sitter-public-id')
+        || it.querySelector('[name="sitter_public_id"]')?.getAttribute('value')
+        || '';
       const names = $$('.requested-item-name', it).map(txt);
       const em = it.querySelector('.requested-item-status em');
       return {
-        issueId, sitterName: txt(it.querySelector('.requested-sitter-name')),
+        issueId, profileId, sitterPublicId, sitterName: txt(it.querySelector('.requested-sitter-name')),
         date: names[0] || '', timeRange: (names[1] || '').replace(/【.*?】/, '').trim(),
         type: txt(it.querySelector('.requested-item-sitting-type')),
         status: txt(em), statusClass: em?.className || ''
@@ -258,14 +279,19 @@
       out.push(...parsed);
       const next = doc.querySelector('.SS-pagination__next a[rel="next"]') || doc.querySelector('.SS-pagination__next a') || doc.querySelector('a[rel="next"]');
       const href = next?.getAttribute('href');
-      url = href ? (new URL(href, location.origin).pathname + new URL(href, location.origin).search) : null;
+      if (href && p + 1 >= maxPages) {
+        warnings.push(`${pageLabel(path)}が${maxPages}ページを超えたため、以降は未確認です。`);
+        url = null;
+      } else {
+        url = href ? (new URL(href, location.origin).pathname + new URL(href, location.origin).search) : null;
+      }
     }
     return { items: out, warnings };
   }
   async function fetchSittings() {
     const c = (await store.get('sittingsCache')).sittingsCache;
     if (c && Date.now() - c.fetchedAt < 10 * 60 * 1000) return { items: c.items || [], warnings: c.warnings || [], fromCache: true };
-    const current = await fetchIssuePages('/parent/issues', 3);
+    const current = await fetchIssuePages('/parent/issues', 5);
     const history = await fetchIssuePages('/parent/histories', 5);
     const items = [...current.items, ...history.items];
     const warnings = [...current.warnings, ...history.warnings];
@@ -274,7 +300,7 @@
     return { items: dedup, warnings };
   }
   async function fetchCurrentIssuesFresh() {
-    const current = await fetchIssuePages('/parent/issues', 3);
+    const current = await fetchIssuePages('/parent/issues', 5);
     const dedup = Object.values(Object.fromEntries((current.items || []).map((i) => [i.issueId, i])));
     return { items: dedup, warnings: current.warnings || [] };
   }
@@ -765,21 +791,76 @@
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
+  function fieldValue(selectors) {
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      if (!el) continue;
+      const value = ('value' in el ? el.value : el.getAttribute('value')) || txt(el);
+      if (String(value || '').trim()) return { value: String(value).trim(), selector };
+    }
+    return null;
+  }
+  function readApplyFormValues() {
+    const date = fieldValue(['#issue_date', '[name="issue[date]"]', '[name="date"]']);
+    const start = fieldValue(['#js-start-at', '[name="issue[start_at]"]', '[name="issue[start_time]"]', '[name="start"]']);
+    const end = fieldValue(['#js-end-at', '[name="issue[end_at]"]', '[name="issue[end_time]"]', '[name="end"]']);
+    const sitter = fieldValue(['#sitter_public_id', '[name="sitter_public_id"]', '[name="issue[sitter_public_id]"]', '[name="sitter_id"]']);
+    const missing = [];
+    if (!date) missing.push('日付');
+    if (!start) missing.push('開始時刻');
+    if (!end) missing.push('終了時刻');
+    if (!sitter) missing.push('シッターID');
+    return {
+      date: normalizeDateValue(date?.value),
+      start: normTimeValue(start?.value),
+      end: normTimeValue(end?.value),
+      sitterPublicId: sitter?.value || '',
+      raw: { date, start, end, sitter },
+      missing
+    };
+  }
+  function compareApplyContext(pending, params) {
+    const warnings = [];
+    if (!pending) return { ok: false, stale: false, warnings: [] };
+    const isFresh = !!pending.createdAt && Date.now() - pending.createdAt < 30 * 60 * 1000;
+    if (!isFresh) warnings.push('この申請フォームへの受け渡し情報は30分を超えたため、古い可能性があります。');
+
+    const expectedDate = normalizeDateValue(isoToSlash(pending.date));
+    const expectedStart = normTimeValue(pending.start || pending.startTime);
+    const expectedEnd = normTimeValue(pending.end || pending.endTime);
+    const expectedSitter = String(pending.sitterPublicId || pending.applicationSitterId || pending.sitterId || '');
+    const urlDate = normalizeDateValue(params.get('date') || '');
+    const urlStart = normTimeValue(params.get('start') || '');
+    const urlEnd = normTimeValue(params.get('end') || '');
+    const urlSitter = String(params.get('sitter_id') || params.get('sitter_public_id') || '');
+    const actual = readApplyFormValues();
+
+    if (expectedDate !== urlDate) warnings.push(`URLの日付が期待値と違います（期待 ${expectedDate || '-'} / URL ${urlDate || '-'}）。`);
+    if (expectedStart !== urlStart || expectedEnd !== urlEnd) warnings.push(`URLの時刻が期待値と違います（期待 ${expectedStart}-${expectedEnd} / URL ${urlStart}-${urlEnd}）。`);
+    if (expectedSitter && urlSitter && expectedSitter !== urlSitter) warnings.push('URLのシッターIDが期待値と違います。');
+    if (actual.missing.length) warnings.push(`フォーム上の値を確認できませんでした（${actual.missing.join('・')}）。`);
+    if (actual.date && actual.date !== expectedDate) warnings.push(`フォームの日付が期待値と違います（期待 ${expectedDate} / 実際 ${actual.date}）。`);
+    if ((actual.start && actual.start !== expectedStart) || (actual.end && actual.end !== expectedEnd)) warnings.push(`フォームの時刻が期待値と違います（期待 ${expectedStart}-${expectedEnd} / 実際 ${actual.start || '-'}-${actual.end || '-'}）。`);
+    if (expectedSitter && actual.sitterPublicId && String(actual.sitterPublicId) !== expectedSitter) warnings.push('フォームのシッターIDが期待値と違います。');
+
+    return {
+      ok: isFresh && !warnings.length,
+      stale: !isFresh,
+      warnings,
+      expected: { date: expectedDate, start: expectedStart, end: expectedEnd, sitter: expectedSitter },
+      actual
+    };
+  }
   async function initApplyForm() {
     let pending = null;
     try { pending = (await store.get('pendingApply')).pendingApply || null; } catch (_) {}
     const params = new URLSearchParams(location.search);
-    const urlDate = params.get('date') || '';
-    const urlSitterId = params.get('sitter_id') || '';
-    const urlStart = params.get('start') || '';
-    const urlEnd = params.get('end') || '';
-    const isFresh = !!pending?.createdAt && Date.now() - pending.createdAt < 30 * 60 * 1000;
-    const matches = !!pending
-      && isFresh
-      && String(pending.sitterId) === String(urlSitterId)
-      && isoToSlash(pending.date) === urlDate
-      && String(pending.start || '') === String(urlStart || '')
-      && String(pending.end || '') === String(urlEnd || '');
+    let checked = compareApplyContext(pending, params);
+    if (pending && checked.actual?.missing?.length) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      checked = compareApplyContext(pending, params);
+    }
+    const matches = checked.ok;
 
     let filled = false;
     if (matches && pending.description) {
@@ -787,23 +868,33 @@
       if (desc && !desc.value.trim()) { setFieldValue(desc, pending.description); filled = true; }
     }
     // 交通費自動確定チェックは触らない（既定OFFのまま）。日付・時刻・シッターはURLでサーバが補完。
-    if (pending && (!isFresh || matches)) { try { await store.set({ pendingApply: null }); } catch (_) {} }
-    showApplyBanner({ matched: matches, urlDate, urlStart, urlEnd, filled });
+    if (pending && (checked.stale || matches)) { try { await store.set({ pendingApply: null }); } catch (_) {} }
+    showApplyBanner({
+      matched: matches,
+      blocked: !!pending && !matches,
+      warnings: checked.warnings || [],
+      date: checked.expected?.date || normalizeDateValue(params.get('date') || ''),
+      start: checked.expected?.start || normTimeValue(params.get('start') || ''),
+      end: checked.expected?.end || normTimeValue(params.get('end') || ''),
+      filled
+    });
   }
-  function showApplyBanner({ matched, urlDate, urlStart, urlEnd, filled }) {
+  function showApplyBanner({ matched, blocked, warnings = [], date, start, end, filled }) {
     if (document.getElementById('poppins-apply-banner')) return;
     const hhmm = (s) => (s || '').replace(/^(\d{2})(\d{2})$/, '$1:$2');
     const transport = document.querySelector('#issue_auto_book_transport_fee');
     const transportOn = !!(transport && transport.checked);
     const lines = [];
-    if (matched) lines.push(`予定: ${urlDate} ${hhmm(urlStart)}〜${hhmm(urlEnd)}`);
+    if (matched) lines.push(`予定: ${date} ${hhmm(start)}〜${hhmm(end)}`);
+    if (blocked) lines.push('注意: このフォームは申請キューの予定と一致確認できないため、自動入力を止めました。');
+    warnings.forEach((w) => lines.push(w));
     if (filled) lines.push('「今回伝えておきたいこと」を自動入力しました（編集可）。');
-    if (transportOn) lines.push('⚠「前回交通費と同じなら見積もり不要」がONです（自動確定に近づきます）。OFF推奨。');
+    if (transportOn) lines.push('注意: 「前回交通費と同じなら見積もり不要」がONです（自動確定に近づきます）。OFF推奨。');
     lines.push('内容と料金目安を確認し、問題なければ自分で「依頼する」を押してください。拡張は送信しません。');
 
     const bar = document.createElement('div');
     bar.id = 'poppins-apply-banner';
-    bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:#11343a;color:#fff;padding:12px 16px;font:13px/1.5 system-ui,-apple-system,sans-serif;box-shadow:0 -6px 20px rgba(0,0,0,.22);';
+    bar.style.cssText = `position:fixed;left:0;right:0;bottom:0;z-index:2147483647;background:${blocked ? '#7a1f24' : '#11343a'};color:#fff;padding:12px 16px;font:13px/1.5 system-ui,-apple-system,sans-serif;box-shadow:0 -6px 20px rgba(0,0,0,.22);`;
     bar.innerHTML = '<div style="max-width:920px;margin:0 auto;display:flex;gap:12px;align-items:center;flex-wrap:wrap">'
       + '<b style="font-size:13px">申請アシスタント</b>'
       + `<span style="flex:1;min-width:200px">${esc(lines.join(' / '))}</span>`
@@ -818,6 +909,63 @@
     bar.querySelector('#poppins-apply-close').addEventListener('click', () => bar.remove());
   }
 
+  function firstText(selectors) {
+    for (const selector of selectors) {
+      const t = txt(document.querySelector(selector));
+      if (t) return t;
+    }
+    return '';
+  }
+  function detectIssueStatusFromText(text) {
+    const t = String(text || '').toLowerCase();
+    const ordered = [
+      /キャンセル|canceled/,
+      /要対応|見積[りも]確認|見積もり確認|承認待ち|要承認|確定待ち|needs?_confirm|awaiting_confirm/,
+      /依頼確定|予約確定|確定済|成立|予約済|booked|charged|confirmed/,
+      /見積[りも]待ち|見積もり待ち|シッター対応待ち|申請済|依頼中|pending|applied/
+    ];
+    const labels = ['キャンセル', '要対応', '確定', '見積り待ち'];
+    for (let i = 0; i < ordered.length; i += 1) if (ordered[i].test(t)) return labels[i];
+    return '';
+  }
+  function parseApplyDetail() {
+    const bodyText = txt(document.body);
+    const issueId = (location.pathname.match(/\/parent\/sitting\/issues\/(\d+)/) || [])[1] || '';
+    const statusEl = document.querySelector('.requested-item-status em, .issue-status em, .issue-status, .application-status em, .application-status, .sitting-status em, .sitting-status');
+    const statusText = txt(statusEl);
+    const profileHref = document.querySelector('a[href*="/sitter/profile/"]')?.getAttribute('href') || '';
+    const profileId = (profileHref.match(/\/sitter\/profile\/(\d+)/) || [])[1] || '';
+    const sitter = fieldValue(['#sitter_public_id', '[name="sitter_public_id"]', '[name="issue[sitter_public_id]"]', '[name="sitter_id"]']);
+    const rawDate = fieldValue(['#issue_date', '[name="issue[date]"]', '[name="date"]'])?.value
+      || (bodyText.match(/20\d{2}[\/年-]\s*\d{1,2}[\/月-]\s*\d{1,2}日?/) || [])[0]
+      || '';
+    const date = normalizeDateValue(rawDate);
+    const explicitStart = fieldValue(['#js-start-at', '[name="issue[start_at]"]', '[name="issue[start_time]"]', '[name="start"]'])?.value || '';
+    const explicitEnd = fieldValue(['#js-end-at', '[name="issue[end_at]"]', '[name="issue[end_time]"]', '[name="end"]'])?.value || '';
+    const range = bodyText.match(/(\d{1,2}[:：]\d{2})\s*[〜~\-－–]\s*(\d{1,2}[:：]\d{2})/);
+    const start = normTimeValue(explicitStart || range?.[1]);
+    const end = normTimeValue(explicitEnd || range?.[2]);
+    const hhmm = (s) => (s || '').replace(/^(\d{2})(\d{2})$/, '$1:$2');
+    return {
+      source: 'detail',
+      issueId,
+      profileId,
+      sitterPublicId: sitter?.value || '',
+      sitterName: firstText(['.requested-sitter-name', '.sitter-name', 'a[href*="/sitter/profile/"]']),
+      date,
+      timeRange: start && end ? `${hhmm(start)}〜${hhmm(end)}` : '',
+      status: statusText ? (detectIssueStatusFromText(statusText) || statusText) : '',
+      statusClass: statusEl?.className || ''
+    };
+  }
+  async function initApplyDetail() {
+    const item = parseApplyDetail();
+    if (!item.issueId) return;
+    try {
+      await chrome.runtime.sendMessage({ type: 'apply_detail_seen', payload: { item } });
+    } catch (_) {}
+  }
+
   // ===== 初期化 / Turbolinks 対応 =====
   function ensureUI() { injectOneClick(); }
   function refresh() { ctx = detectContext(); injectOneClick(); }
@@ -825,6 +973,7 @@
   let moTimer = null;
   function init() {
     if (IS_APPLY_FORM) { initApplyForm(); return; }
+    if (IS_APPLY_DETAIL) { initApplyDetail(); return; }
     ensureUI();
     new MutationObserver(() => { clearTimeout(moTimer); moTimer = setTimeout(ensureUI, 300); }).observe(document.body, { childList: true, subtree: true });
     document.addEventListener('turbolinks:load', refresh);

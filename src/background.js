@@ -168,31 +168,48 @@ async function gcalFreebusy({ timeMin, timeMax, calendarId }) {
 
 // ===== 申請キュー / 状態追跡（Level 3）＋ 申請可能通知（Phase 2） =====
 const APPLY_ALARM = 'poppins-apply-poll';
+const SMARTSITTER_ORIGIN = 'https://smartsitter.jp';
 const ISSUE_LIST_URL = 'https://smartsitter.jp/parent/issues';
+const MAX_ISSUE_PAGES = 5;
 
 function tokyoTodayUtc() {
   const s = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const [y, m, d] = s.split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d));
 }
-function addMonthsUtc(date, n) { const x = new Date(date); x.setUTCMonth(x.getUTCMonth() + n); return x; }
+function addMonthsUtc(date, n) {
+  const first = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + n, 1));
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), Math.min(date.getUTCDate(), last)));
+}
 function jaDateToIso(s) {
-  const m = (s || '').match(/(\d{4})年(\d{2})月(\d{2})日/);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+  const t = String(s || '').trim();
+  let m = t.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (!m) m = t.match(/(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+  if (!m) m = t.match(/(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/);
+  return m ? `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}` : '';
 }
 const normName = (s) => (s || '').replace(/\s/g, '');
+const sameId = (a, b) => !!a && !!b && String(a) === String(b);
 
 async function getQueue() { return (await chrome.storage.local.get('applyQueue')).applyQueue || []; }
 async function setQueue(q) { await chrome.storage.local.set({ applyQueue: q }); }
 
+const STATUS_RANK = { deferred: 0, ready: 1, applied: 2, needs_confirm: 3, booked: 4, canceled: 4 };
+
 // 一覧の status から内部状態を判定（キーワードはライブで要調整の可能性あり）
 function classifyIssueStatus(it) {
-  const s = `${it.status || ''} ${it.statusClass || ''}`;
+  const s = `${it.status || ''} ${it.statusClass || ''}`.toLowerCase();
   if (/canceled|キャンセル/.test(s)) return 'canceled';
-  if (/要対応|見積もり確認|確定待ち/.test(s)) return 'needs_confirm';
-  if (/確定|成立|booked|charged/.test(s)) return 'booked';
-  if (/見積/.test(s)) return 'applied';
+  if (/要対応|見積[りも]確認|見積もり確認|承認待ち|要承認|確定待ち|needs?_confirm|awaiting_confirm/.test(s)) return 'needs_confirm';
+  if (/確定|成立|予約済|booked|charged|confirmed/.test(s)) return 'booked';
+  if (/見積[りも]待ち|見積もり待ち|シッター対応待ち|申請済|依頼中|pending|applied|見積/.test(s)) return 'applied';
   return null;
+}
+
+function shouldAdvanceStatus(current, next) {
+  if (!next || next === current) return false;
+  return (STATUS_RANK[next] ?? 0) >= (STATUS_RANK[current] ?? 0);
 }
 
 function normTime(s) {
@@ -206,6 +223,35 @@ function itemTimeMatches(issue, queued) {
   const start = normTime(parts[0]);
   const end = normTime(parts[1]);
   return start === normTime(queued.start || queued.startTime) && end === normTime(queued.end || queued.endTime);
+}
+
+function issueIdentityMatches(issue, queued) {
+  const queueProfileId = queued.profileId || queued.sitterProfileId;
+  const issueProfileId = issue.profileId || issue.sitterProfileId;
+  const queueApplyId = queued.applicationSitterId || queued.sitterPublicId || queued.sitterId;
+  const issueApplyId = issue.applicationSitterId || issue.sitterPublicId || issue.sitterId;
+  if (queueProfileId && issueProfileId && !sameId(queueProfileId, issueProfileId)) return false;
+  if (queueApplyId && issueApplyId && !sameId(queueApplyId, issueApplyId)) return false;
+  if ((queueProfileId && issueProfileId) || (queueApplyId && issueApplyId)) return true;
+
+  return normName(issue.sitterName) === normName(queued.sitterName);
+}
+
+function issueMatchesQueueItem(issue, queued) {
+  if (issue.issueId && queued.issueId && sameId(issue.issueId, queued.issueId)) return true;
+  return issueIdentityMatches(issue, queued)
+    && jaDateToIso(issue.date) === queued.date
+    && itemTimeMatches(issue, queued);
+}
+
+function resolveSmartSitterUrl(href, baseUrl = ISSUE_LIST_URL) {
+  if (!href) return null;
+  try {
+    const u = new URL(href, baseUrl);
+    return u.origin === SMARTSITTER_ORIGIN ? u.href : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 // --- offscreen 文書でHTMLをパース（service workerにDOMParserが無いため）---
@@ -228,11 +274,32 @@ async function parseIssuesHtml(html) {
     return (await chrome.runtime.sendMessage({ target: 'offscreen', type: 'parse_issues', html })) || { ok: false, items: [] };
   } catch (e) { return { ok: false, error: String(e?.message || e), items: [] }; }
 }
-async function fetchIssuesItems() {
+function dedupeIssues(items) {
+  const out = [];
+  const seen = new Set();
+  for (const it of items || []) {
+    const key = it.issueId || `${normName(it.sitterName)}|${jaDateToIso(it.date)}|${normTime(it.timeRange)}`;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(it);
+  }
+  return out;
+}
+async function fetchIssuesItems({ maxPages = MAX_ISSUE_PAGES } = {}) {
+  const items = [];
+  const warnings = [];
+  let url = ISSUE_LIST_URL;
   try {
-    const res = await fetch(ISSUE_LIST_URL, { credentials: 'include' });
-    if (!res.ok) return { ok: false, items: [] };
-    return await parseIssuesHtml(await res.text());
+    for (let page = 1; page <= maxPages && url; page += 1) {
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) return { ok: false, error: `依頼一覧を取得できませんでした（HTTP ${res.status}）。`, items: dedupeIssues(items), warnings };
+      const parsed = await parseIssuesHtml(await res.text());
+      if (!parsed.ok) return { ...parsed, items: dedupeIssues(items), warnings };
+      items.push(...(parsed.items || []));
+      url = resolveSmartSitterUrl(parsed.nextHref, url);
+      if (url && page === maxPages) warnings.push(`依頼一覧が${maxPages}ページを超えたため、以降は未確認です。`);
+    }
+    return { ok: true, items: dedupeIssues(items), warnings };
   } catch (e) { return { ok: false, error: String(e?.message || e), items: [] }; }
 }
 
@@ -257,17 +324,16 @@ async function reconcileQueue(items, { notify = false } = {}) {
   if (Array.isArray(items) && items.length) {
     for (const it of q) {
       if (it.status === 'booked' || it.status === 'canceled') continue;
-      const matches = items.filter((x) => (
-        normName(x.sitterName) === normName(it.sitterName)
-        && jaDateToIso(x.date) === it.date
-        && itemTimeMatches(x, it)
-      ));
+      const matches = items.filter((x) => issueMatchesQueueItem(x, it));
       const match = matches.length === 1 ? matches[0] : null;
       if (!match) continue;
       it.issueId = match.issueId || it.issueId;
+      it.profileId = match.profileId || it.profileId;
+      it.applicationSitterId = match.applicationSitterId || match.sitterId || it.applicationSitterId;
+      it.sitterPublicId = match.sitterPublicId || it.sitterPublicId;
       it.statusText = match.status || it.statusText;
-      const cls = classifyIssueStatus(match);
-      if (cls && cls !== it.status) { it.status = cls; it.updatedAt = Date.now(); }
+      const cls = classifyIssueStatus(match) || (match.source === 'detail' ? 'applied' : null);
+      if (shouldAdvanceStatus(it.status, cls)) { it.status = cls; it.updatedAt = Date.now(); }
       if (it.status === 'needs_confirm' && !it.notifiedConfirm) { needConfirm.push(it); it.notifiedConfirm = true; }
     }
   }
@@ -281,12 +347,20 @@ async function reconcileQueue(items, { notify = false } = {}) {
 
 async function runApplyPoll({ items, notify = false } = {}) {
   let list = items;
+  let warnings = [];
   if (!Array.isArray(list)) {
     const fetched = await fetchIssuesItems();
     if (!fetched.ok) return { ok: false, error: fetched.error || (fetched.login ? 'SmartSitterへのログインが必要です。' : '依頼一覧を取得できませんでした。'), queue: await getQueue() };
     list = fetched.items || [];
+    warnings = fetched.warnings || [];
   }
-  return { ok: true, queue: await reconcileQueue(list, { notify }) };
+  return { ok: true, queue: await reconcileQueue(list, { notify }), warnings };
+}
+
+async function recordIssueDetail(item) {
+  if (!item || typeof item !== 'object') return { ok: false, error: '依頼詳細を解釈できませんでした。' };
+  const queue = await reconcileQueue([{ ...item, source: 'detail' }], { notify: false });
+  return { ok: true, queue };
 }
 
 function notifyApply(kind, items) {
@@ -334,6 +408,7 @@ chrome.runtime.onMessage.addListener((req, sender, send) => {
       case 'gcal_freebusy': return send(await gcalFreebusy(req.payload || {}));
       case 'gcal_redirect': return send({ ok: true, redirect: redirectUrl() });
       case 'apply_poll': return send(await runApplyPoll({ items: req.payload?.items, notify: false }));
+      case 'apply_detail_seen': return send(await recordIssueDetail(req.payload?.item));
       case 'open_panel':
         try {
           if (sender?.tab?.id) await chrome.sidePanel.open({ tabId: sender.tab.id });

@@ -17,10 +17,17 @@ function parseRequestedItems(doc) {
     const href = a ? a.getAttribute('href') || '' : '';
     const issueId = ((href.match(/\/parent\/(?:sitting\/)?issues\/(\d+)/)
       || href.match(/\/parent\/histories\/(\d+)/) || [])[1]) || '';
+    const profileHref = it.querySelector('a[href*="/sitter/profile/"]')?.getAttribute('href') || '';
+    const profileId = (profileHref.match(/\/sitter\/profile\/(\d+)/) || [])[1] || '';
+    const sitterPublicId = it.querySelector('[data-sitter-public-id]')?.getAttribute('data-sitter-public-id')
+      || it.querySelector('[name="sitter_public_id"]')?.getAttribute('value')
+      || '';
     const names = Array.from(it.querySelectorAll('.requested-item-name')).map(txt);
     const em = it.querySelector('.requested-item-status em');
     return {
       issueId,
+      profileId,
+      sitterPublicId,
       sitterName: txt(it.querySelector('.requested-sitter-name')),
       date: names[0] || '',
       timeRange: (names[1] || '').replace(/【.*?】/, '').trim(),
@@ -37,7 +44,10 @@ chrome.runtime.onMessage.addListener((req, _sender, send) => {
     try {
       const doc = new DOMParser().parseFromString(req.html || '', 'text/html');
       if (looksLikeLoginPage(doc)) { send({ ok: false, login: true, items: [] }); return; }
-      send({ ok: true, items: parseRequestedItems(doc) });
+      const next = doc.querySelector('.SS-pagination__next a[rel="next"]')
+        || doc.querySelector('.SS-pagination__next a')
+        || doc.querySelector('a[rel="next"]');
+      send({ ok: true, items: parseRequestedItems(doc), nextHref: next?.getAttribute('href') || '' });
     } catch (e) {
       send({ ok: false, error: String(e && e.message || e), items: [] });
     }

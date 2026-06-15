@@ -28,7 +28,8 @@ for (const script of manifest.content_scripts ?? []) {
 }
 assert.deepEqual(manifest.content_scripts?.[0]?.matches, [
   'https://smartsitter.jp/parent/message_rooms*',
-  'https://smartsitter.jp/parent/sitting/issues/new*'
+  'https://smartsitter.jp/parent/sitting/issues/new*',
+  'https://smartsitter.jp/parent/sitting/issues/*'
 ]);
 
 for (const host of ['https://smartsitter.jp/*', 'https://openrouter.ai/*', 'https://www.googleapis.com/*']) {
@@ -81,10 +82,21 @@ assert.match(content, /assistant_resolve_sitter_id/);
 assert.match(content, /assistant_poll_issues/);
 assert.match(content, /APPLICATION_RESPONSE_SCHEMA/);
 assert.match(content, /initApplyForm/);
+assert.match(content, /IS_APPLY_DETAIL/);
+assert.match(content, /initApplyDetail/);
+assert.match(content, /apply_detail_seen/);
+assert.match(content, /readApplyFormValues/);
+assert.match(content, /#issue_date/);
+assert.match(content, /#js-start-at/);
+assert.match(content, /#js-end-at/);
+assert.match(content, /#sitter_public_id/);
 assert.match(content, /pendingApply/);
 assert.match(content, /Date\.now\(\) - pending\.createdAt < 30 \* 60 \* 1000/);
-assert.match(content, /String\(pending\.start \|\| ''\) === String\(urlStart \|\| ''\)/);
+assert.match(content, /フォーム上の値を確認できませんでした/);
+assert.match(content, /ページを超えたため/);
+assert.match(content, /parseApplyDetail/);
 assert.doesNotMatch(content, /js-submit-button[^]{0,200}\.click\(\)/, 'must never auto-click the application submit button');
+assert.doesNotMatch(content, /setUTCMonth/, 'month arithmetic should clamp month-end dates');
 
 const background = read('src/background.js');
 assert.match(background, /setAccessLevel/);
@@ -100,16 +112,26 @@ assert.match(background, /sitterid:/);
 assert.match(background, /chrome\.alarms/);
 assert.match(background, /runApplyPoll/);
 assert.match(background, /reconcileQueue/);
+assert.match(background, /MAX_ISSUE_PAGES/);
+assert.match(background, /nextHref/);
+assert.match(background, /apply_detail_seen/);
 assert.match(background, /chrome\.notifications/);
 assert.match(background, /ensureOffscreen/);
 assert.match(background, /apply_poll/);
-assert.ok(background.indexOf('要対応|見積もり確認|確定待ち') < background.indexOf('確定|成立|booked|charged'), 'needs-confirm classification must run before booked');
+assert.match(background, /STATUS_RANK/);
+assert.match(background, /shouldAdvanceStatus/);
+assert.ok(background.indexOf('承認待ち') < background.indexOf('booked|charged'), 'needs-confirm classification must run before booked');
+assert.match(background, /シッター対応待ち/);
+assert.match(background, /issueIdentityMatches/);
 assert.match(background, /itemTimeMatches/);
+assert.doesNotMatch(background, /setUTCMonth/, 'month arithmetic should clamp month-end dates');
 
 const offscreen = read('src/offscreen.js');
 assert.match(offscreen, /DOMParser/);
 assert.match(offscreen, /parse_issues/);
 assert.match(offscreen, /requested-item/);
+assert.match(offscreen, /nextHref/);
+assert.match(offscreen, /sitterPublicId/);
 
 const settings = read('src/settings.js');
 assert.match(settings, /makeBinding/);
@@ -121,6 +143,7 @@ assert.match(settings, /保存する候補を選択/);
 assert.match(settings, /runExtractApplications/);
 assert.match(settings, /classifyCandidate/);
 assert.match(settings, /pendingApply/);
+assert.match(settings, /applicationSitterId/);
 assert.match(settings, /sitting\/issues\/new/);
 assert.match(settings, /renderQueue/);
 assert.match(settings, /upsertQueueItem/);
@@ -128,6 +151,7 @@ assert.match(settings, /refreshQueueStatuses/);
 assert.match(settings, /applyQueue/);
 assert.match(settings, /cand\.decision !== 'agreed'/);
 assert.doesNotMatch(settings, /upsertQueueItem\(spec, 'applied'\)/, 'opening the application form must not mark queue items as applied');
+assert.doesNotMatch(settings, /setUTCMonth/, 'month arithmetic should clamp month-end dates');
 
 assert.match(html, /data-pane="apply"/);
 assert.match(html, /extractApplications/);
