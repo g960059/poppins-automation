@@ -113,7 +113,8 @@
   textarea { min-height: 70px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 120px; }
-  .actions { display: grid; grid-template-columns: minmax(0, 1fr) 76px 68px; gap: 8px; margin-top: 10px; }
+  .actions { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 10px; }
+  .secondary-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .btn {
     min-width: 0;
     min-height: 36px;
@@ -122,10 +123,13 @@
     padding: 9px 10px;
     font: 800 13px/1 inherit;
     cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     transition: transform .08s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease;
   }
   .btn:active { transform: translateY(1px); }
-  .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 5px 14px rgba(23, 111, 118, .18); }
+  .btn.primary { min-height: 44px; background: var(--accent); color: #fff; box-shadow: 0 5px 14px rgba(23, 111, 118, .18); }
   .btn.primary:hover { background: var(--accent-deep); }
   .btn.ghost { background: #eef3f1; color: #26312e; border-color: #e1e8e5; }
   .btn.ghost:hover { background: #e4eeeb; border-color: #d2dfdc; }
@@ -141,7 +145,13 @@
     margin-bottom: 10px;
     overflow-wrap: anywhere;
   }
+  .status.recipient {
+    margin-bottom: 8px;
+    font-weight: 800;
+    background: #edf8f6;
+  }
   .signals { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 12px; }
+  .signals.compact { grid-template-columns: 1fr; margin: 0; }
   .signal {
     border: 1px solid var(--line);
     background: var(--panel-soft);
@@ -166,7 +176,8 @@
   .signal.ok::before { background: #22826f; }
   .signal.warn-signal { border-color: var(--warn-line); background: var(--warn-bg); }
   .signal.warn-signal::before { background: #d59013; }
-  .warn { color: var(--warn); font-size: 12px; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 8px 10px; margin-top: 8px; overflow-wrap: anywhere; }
+  .warn { color: var(--warn); font-size: 12px; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px; padding: 8px 10px; margin-top: 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .warn[hidden] { display: none; }
   .err { color: var(--danger); font-size: 12px; margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
   .chip {
@@ -208,12 +219,50 @@
   .mem textarea { min-height: 44px; margin-top: 4px; font-size: 12px; }
   details { margin-top: 10px; }
   summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+  .context-details {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .context-details summary {
+    padding: 10px 12px;
+    font-weight: 800;
+    color: #42504d;
+    list-style-position: inside;
+  }
+  .context-details[open] summary { border-bottom: 1px solid var(--line); }
+  .context-details .details-body { padding: 10px 12px 12px; }
+  .context-actions {
+    margin-top: 10px;
+    padding-top: 2px;
+  }
+  .settings-action-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .settings-action-row .btn {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 128px;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .settings-action-row .muted { flex: 1 1 120px; min-width: 0; }
+  .gcal-redirect { overflow-wrap: anywhere; }
   pre.ctx { white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; background: #1f2d2b; color: #d6ebe7; padding: 10px; border-radius: 8px; max-height: 300px; overflow: auto; }
   .bar { position: sticky; bottom: 0; background: linear-gradient(to top, var(--bg) 70%, rgba(247,248,246,0)); padding: 12px 0 0; display: flex; gap: 10px; align-items: center; }
   code { background: #eef3f1; padding: 1px 5px; border-radius: 4px; font-size: 12px; word-break: break-all; }
   @media (max-width: 360px) {
     .signals { grid-template-columns: 1fr; }
-    .actions { grid-template-columns: 1fr; }
+    .secondary-actions { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 420px) {
+    .row { align-items: stretch; }
+    .row > div { flex-basis: 100%; min-width: 100%; max-width: 100% !important; }
   }
 </style>
 </head>
@@ -237,29 +286,39 @@
 
     <main>
       <section class="pane active" id="pane-compose">
-        <div class="status" id="pageStatus">現在のページを確認中...</div>
-        <div class="signals" id="stateSignals">
-          <div class="signal"><b>最終メッセージ</b><span id="sigLastMessage">-</span></div>
-          <div class="signal"><b>入力欄</b><span id="sigDraft">-</span></div>
-          <div class="signal"><b>履歴/予定</b><span id="sigSittings">-</span></div>
-          <div class="signal"><b>Google Calendar</b><span id="sigGcal">-</span></div>
-        </div>
+        <div class="status recipient" id="pageStatus">現在のページを確認中...</div>
+        <div class="warn" id="stateWarnings" hidden></div>
         <div class="section">
           <div class="chips" id="chips"></div>
           <label>意図 / 依頼</label>
           <textarea id="intent" placeholder="例）来週火曜の代わりに翌週へ振り替えできるか丁寧に聞いて"></textarea>
           <div class="actions">
             <button class="btn primary" id="generate" type="button">下書きを生成</button>
-            <button class="btn ghost" id="generateAuto" type="button">自動判断</button>
-            <button class="btn ghost" id="refreshState" type="button">再読込</button>
+            <div class="secondary-actions">
+              <button class="btn ghost" id="generateAuto" type="button">自動判断</button>
+              <button class="btn ghost" id="refreshState" type="button">再読込</button>
+            </div>
           </div>
         </div>
         <div id="composeOut"></div>
-        <details>
-          <summary>送信する文脈をプレビュー</summary>
-          <pre class="ctx" id="contextPreview"></pre>
+        <details class="context-details">
+          <summary>文脈ステータス</summary>
+          <div class="details-body">
+            <div class="signals compact" id="stateSignals">
+              <div class="signal"><b>最終メッセージ</b><span id="sigLastMessage">-</span></div>
+              <div class="signal"><b>入力欄</b><span id="sigDraft">-</span></div>
+              <div class="signal"><b>履歴/予定</b><span id="sigSittings">-</span></div>
+              <div class="signal"><b>Google Calendar</b><span id="sigGcal">-</span></div>
+            </div>
+          </div>
         </details>
-        <div class="row" style="margin-top:10px">
+        <details class="context-details">
+          <summary>送信する文脈をプレビュー</summary>
+          <div class="details-body">
+            <pre class="ctx" id="contextPreview"></pre>
+          </div>
+        </details>
+        <div class="row context-actions">
           <button class="btn ghost" id="updateMemory" type="button">記憶を更新</button>
           <span class="muted" id="memoryStatus"></span>
         </div>
@@ -318,11 +377,11 @@
           <label>OAuth クライアントID（種類: ウェブアプリケーション）</label>
           <input id="gcalClientId" placeholder="xxxx.apps.googleusercontent.com">
           <label>カレンダーID</label><input id="gcalCalendarId" placeholder="primary">
-          <div class="row" style="margin-top:10px">
-            <button class="btn ghost" id="gcalConnect" type="button" style="flex:0">Google を接続</button>
+          <div class="settings-action-row">
+            <button class="btn ghost" id="gcalConnect" type="button">Google を接続</button>
             <span class="muted" id="gcalStatus"></span>
           </div>
-          <div class="muted" style="margin-top:8px">承認済みリダイレクトURIに登録: <code id="gcalRedirect">...</code></div>
+          <div class="muted gcal-redirect" style="margin-top:8px">承認済みリダイレクトURIに登録: <code id="gcalRedirect">...</code></div>
         </fieldset>
 
         <div class="bar">

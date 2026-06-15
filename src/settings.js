@@ -131,9 +131,23 @@ function setSignal(id, text, kind = '') {
   box.classList.toggle('warn-signal', kind === 'warn');
 }
 
+function renderStateWarnings(status = {}) {
+  const warnings = [];
+  if (status.sittingsWarnings?.length) {
+    warnings.push(`履歴/予定の取得に警告があります（${status.sittingsWarnings.length}件）。必要なら文脈ステータスを確認してください。`);
+  }
+  if (status.gcal === '要再接続') {
+    warnings.push('Google Calendar連携の再接続が必要です。カレンダー文脈なしで生成するか、設定タブで再接続してください。');
+  }
+  const box = $('stateWarnings');
+  box.hidden = warnings.length === 0;
+  box.textContent = warnings.join('\n');
+}
+
 function renderSignals(status, memory) {
+  renderStateWarnings(status || {});
   setSignal('sigLastMessage', status.lastMessage || '-', status.lastMessage ? 'ok' : '');
-  setSignal('sigDraft', status.hasDraft ? '入力済み（挿入時に置換/追記を選択）' : '空', status.hasDraft ? 'warn' : 'ok');
+  setSignal('sigDraft', status.hasDraft ? '入力済み（挿入時に置換/追記を選択）' : '空', status.hasDraft ? '' : 'ok');
   const sittingText = status.sittingsWarnings?.length
     ? `警告 ${status.sittingsWarnings.length}件`
     : (status.sittingsCacheAt ? `取得済み ${new Date(status.sittingsCacheAt).toLocaleTimeString('ja-JP')}` : '未取得');

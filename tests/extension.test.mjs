@@ -45,6 +45,8 @@ assert.match(html, /<script src="settings\.js"><\/script>/);
 assert.match(html, /data-pane="compose"/);
 assert.match(html, /data-pane="sitter"/);
 assert.match(html, /data-pane="settings"/);
+assert.match(html, /stateWarnings/);
+assert.match(html, /文脈ステータス/);
 assert.match(html, /sigLastMessage/);
 assert.match(html, /sigSittings/);
 assert.match(html, /sigGcal/);
