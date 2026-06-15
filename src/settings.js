@@ -405,6 +405,332 @@ async function connectGcal() {
   refreshState();
 }
 
+// ===== 申請（システム依頼）タブ =====
+function todayTokyo() {
+  const s = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+function isoToUtc(iso) {
+  const m = /(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+}
+function addMonthsUtc(d, n) { const x = new Date(d); x.setUTCMonth(x.getUTCMonth() + n); return x; }
+function fmtSlash(d) { return `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`; }
+function fmtJp(d) { const wd = ['日', '月', '火', '水', '木', '金', '土'][d.getUTCDay()]; return `${d.getUTCMonth() + 1}/${d.getUTCDate()}(${wd})`; }
+const hhmmCompact = (t) => (t || '').replace(':', '');
+
+function buildDescription(cand) {
+  return [
+    'いつもお世話になっております。',
+    '下記の日程でお願いできますと幸いです。',
+    `${cand.date} ${cand.startTime}〜${cand.endTime}`,
+    'ご確認のほど、どうぞよろしくお願いいたします。'
+  ].join('\n');
+}
+
+async function storedSitterId(profileId) {
+  if (!profileId) return null;
+  const key = `sitterid:${profileId}`;
+  const got = await chrome.storage.local.get(key);
+  return got[key]?.sitterId || null;
+}
+
+function classifyCandidate(cand, today, twoMonthEnd, existing) {
+  const d = isoToUtc(cand.date);
+  if (!d) return { group: 'excluded', reason: '日付を解釈できませんでした' };
+  if (cand.decision === 'declined') return { group: 'excluded', reason: '見送り（チャットで除外）', d };
+  if (cand.decision !== 'agreed') return { group: 'excluded', reason: `未確定（${cand.decision || 'unknown'}）`, d };
+  const hit = (existing || []).find((e) => (
+    e.date === cand.date
+    && e.active
+    && (!e.startTime || !e.endTime || (hhmmCompact(e.startTime) === hhmmCompact(cand.startTime) && hhmmCompact(e.endTime) === hhmmCompact(cand.endTime)))
+  ));
+  if (hit) return { group: 'already', reason: `既に依頼あり（${hit.status || '進行中'}）`, d };
+  if (d < today) return { group: 'excluded', reason: '過去の日付', d };
+  if (d <= twoMonthEnd) return { group: 'ready', d };
+  return { group: 'deferred', d, availableFrom: addMonthsUtc(d, -2) };
+}
+
+async function runExtractApplications() {
+  const out = $('applyOut');
+  $('applyWarn').hidden = true;
+  out.innerHTML = '<span class="muted">抽出中...</span>';
+  $('extractApplications').disabled = true;
+  try {
+    const tab = await activeMessageRoomTab();
+    const res = await sendToTab(tab.id, 'assistant_extract_applications');
+    const binding = makeBinding(tab, res.ctx);
+    $('applyHead').textContent = `対象: ${res.ctx.sitterName || '不明'}（room ${res.ctx.roomId || '-'}）`;
+    if (res.sittingsWarnings?.length) {
+      $('applyWarn').hidden = false;
+      $('applyWarn').textContent = res.sittingsWarnings.join('\n');
+    }
+    renderApplications(res.candidates || [], res.existing || [], binding);
+  } catch (e) {
+    out.innerHTML = `<div class="err">${esc(e.message || e)}</div>`;
+  } finally {
+    $('extractApplications').disabled = false;
+  }
+}
+
+function renderApplications(candidates, existing, binding) {
+  const out = $('applyOut');
+  out.innerHTML = '';
+  const today = todayTokyo();
+  const twoMonthEnd = addMonthsUtc(today, 2);
+  const groups = { ready: [], deferred: [], already: [], excluded: [] };
+  candidates.forEach((c) => {
+    const cls = classifyCandidate(c, today, twoMonthEnd, existing);
+    groups[cls.group].push({ c, cls });
+  });
+
+  if (!candidates.length) {
+    out.innerHTML = '<div class="muted">申請候補は見つかりませんでした。</div>';
+    return;
+  }
+
+  const section = (title, items, kind) => {
+    if (!items.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'apply-group';
+    const h = document.createElement('h4');
+    h.textContent = `${title}（${items.length}）`;
+    wrap.appendChild(h);
+    items.forEach(({ c, cls }) => wrap.appendChild(renderApplyItem(c, cls, kind, binding)));
+    out.appendChild(wrap);
+  };
+  section('要確認（2か月以内・申請可能）', groups.ready, 'ready');
+  section('まだ申請不可（2か月超）', groups.deferred, 'deferred');
+  section('既に依頼あり', groups.already, 'already');
+  section('除外', groups.excluded, 'excluded');
+}
+
+function renderApplyItem(c, cls, kind, binding) {
+  const item = document.createElement('div');
+  item.className = 'apply-item' + (kind === 'excluded' ? ' excluded' : kind === 'deferred' ? ' deferred' : '');
+  const when = cls.d ? `${fmtJp(cls.d)} ${c.startTime}〜${c.endTime}` : `${c.date} ${c.startTime}〜${c.endTime}`;
+  item.innerHTML = `<div class="when">${esc(when)}</div>`
+    + (c.evidence ? `<div class="ev">根拠: ${esc(c.evidence)}</div>` : '')
+    + (cls.reason ? `<div class="meta">${esc(cls.reason)}</div>` : '')
+    + (cls.availableFrom ? `<div class="meta">${esc(fmtSlash(cls.availableFrom))} から申請可能</div>` : '');
+
+  if (kind === 'ready' || kind === 'deferred') {
+    const btns = document.createElement('div');
+    btns.className = 'row-btns';
+    if (kind === 'ready') {
+      const fill = document.createElement('button');
+      fill.className = 'inline-btn';
+      fill.type = 'button';
+      fill.textContent = 'フォームに入力';
+      fill.addEventListener('click', () => fillForm(c, binding, item, fill));
+      btns.appendChild(fill);
+    }
+    const queueBtn = document.createElement('button');
+    queueBtn.className = 'inline-btn';
+    queueBtn.type = 'button';
+    queueBtn.textContent = kind === 'ready' ? '追跡に追加' : '予約に入れる';
+    queueBtn.addEventListener('click', async () => {
+      await upsertQueueItem(specFromCandidate(c, binding), kind === 'ready' ? 'ready' : 'deferred');
+      setCardStatus(item, kind === 'ready' ? '追跡キューに追加しました。' : '予約キューに入れました（申請可能日に通知）。');
+      await renderQueue();
+    });
+    btns.appendChild(queueBtn);
+    item.appendChild(btns);
+  }
+  return item;
+}
+
+function specFromCandidate(c, binding) {
+  return {
+    profileId: binding.ctx.sitterId,
+    sitterName: binding.ctx.sitterName,
+    date: c.date, startTime: c.startTime, endTime: c.endTime,
+    decision: c.decision, evidence: c.evidence
+  };
+}
+
+async function openApplyForm(spec, opts = {}) {
+  const note = opts.note || (() => {});
+  let sitterId = await storedSitterId(spec.profileId);
+  if (!sitterId && opts.tabId) {
+    try { const r = await sendToTab(opts.tabId, 'assistant_resolve_sitter_id', { profileId: spec.profileId }); if (r?.ok) sitterId = r.sitterId; } catch (_) {}
+  }
+  if (!sitterId) {
+    const pasted = prompt('このシッターの申請用IDを自動取得できませんでした。\nプロフィールの「依頼する」を一度開き、そのURL（…sitter_id=XXXX…）を貼り付けてください。');
+    const m = /sitter_id=(\d+)/.exec(pasted || '') || /(\d{3,})/.exec(pasted || '');
+    if (!m) { note('sitter_id を取得できませんでした。', true); return false; }
+    sitterId = m[1];
+    await chrome.storage.local.set({ [`sitterid:${spec.profileId}`]: { sitterId, source: 'manual', at: Date.now() } });
+  }
+  const d = isoToUtc(spec.date);
+  const deepLink = 'https://smartsitter.jp/parent/sitting/issues/new'
+    + `?date=${encodeURIComponent(fmtSlash(d))}`
+    + `&start=${hhmmCompact(spec.startTime)}&end=${hhmmCompact(spec.endTime)}`
+    + '&issue_type=sitting&include_interview=false'
+    + `&sitter_id=${sitterId}`;
+  await chrome.storage.local.set({
+    pendingApply: {
+      sitterId, date: spec.date,
+      start: hhmmCompact(spec.startTime), end: hhmmCompact(spec.endTime),
+      description: buildDescription(spec), sitterName: spec.sitterName, createdAt: Date.now()
+    }
+  });
+  await chrome.tabs.create({ url: deepLink, active: true });
+  note('実フォームを開きました。内容を確認して「依頼する」を押してください（送信は手動）。');
+  return true;
+}
+
+async function fillForm(cand, binding, item, btn) {
+  btn.disabled = true;
+  try {
+    const spec = specFromCandidate(cand, binding);
+    const ok = await openApplyForm(spec, { tabId: binding.tabId, note: (m, e) => setCardStatus(item, m, e) });
+    if (ok) { await upsertQueueItem(spec, 'ready'); await renderQueue(); }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ===== 申請キュー（永続）/ 状態追跡 =====
+const qkey = (profileId, date, start) => `${profileId}|${date}|${start}`;
+async function loadQueue() { return (await chrome.storage.local.get('applyQueue')).applyQueue || []; }
+
+async function activeSmartsitterTabId() {
+  const tab = await activeTab();
+  return (tab?.id && /^https:\/\/smartsitter\.jp\/parent\//.test(tab.url || '')) ? tab.id : undefined;
+}
+
+async function upsertQueueItem(spec, status) {
+  const q = await loadQueue();
+  const key = qkey(spec.profileId, spec.date, hhmmCompact(spec.startTime));
+  const now = Date.now();
+  const base = {
+    key, profileId: spec.profileId, sitterName: spec.sitterName,
+    date: spec.date, start: hhmmCompact(spec.startTime), end: hhmmCompact(spec.endTime),
+    startTime: spec.startTime, endTime: spec.endTime,
+    decision: spec.decision || '', evidence: spec.evidence || '', updatedAt: now
+  };
+  const rank = { deferred: 0, ready: 1, applied: 2, needs_confirm: 3, booked: 4, canceled: 4 };
+  const existing = q.find((x) => x.key === key);
+  if (existing) {
+    Object.assign(existing, base);
+    if ((rank[status] ?? 0) >= (rank[existing.status] ?? 0)) existing.status = status;
+  } else {
+    q.push({ ...base, status, addedAt: now });
+  }
+  await chrome.storage.local.set({ applyQueue: q });
+}
+async function deleteQueueItem(key) {
+  const q = (await loadQueue()).filter((x) => x.key !== key);
+  await chrome.storage.local.set({ applyQueue: q });
+}
+
+const QUEUE_GROUPS = [
+  ['needs_confirm', '要確定（見積もり到着・24h以内）'],
+  ['ready', '申請可能'],
+  ['deferred', '予約中（申請可能日待ち）'],
+  ['applied', '申請済み・見積り待ち'],
+  ['booked', '確定'],
+  ['canceled', 'キャンセル']
+];
+
+async function renderQueue() {
+  const box = $('applyQueueOut');
+  if (!box) return;
+  const q = await loadQueue();
+  if (!q.length) { box.innerHTML = '<div class="muted">予約・追跡はまだありません。</div>'; return; }
+  const today = todayTokyo();
+  box.innerHTML = '';
+  QUEUE_GROUPS.forEach(([status, title]) => {
+    const items = q.filter((x) => x.status === status);
+    if (!items.length) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'apply-group';
+    const h = document.createElement('h4');
+    h.textContent = `${title}（${items.length}）`;
+    wrap.appendChild(h);
+    items.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    items.forEach((it) => wrap.appendChild(renderQueueItem(it, today)));
+    box.appendChild(wrap);
+  });
+}
+
+function renderQueueItem(it) {
+  const d = isoToUtc(it.date);
+  const node = document.createElement('div');
+  node.className = 'apply-item' + (it.status === 'deferred' ? ' deferred' : it.status === 'canceled' ? ' excluded' : '');
+  const when = d ? `${fmtJp(d)} ${it.startTime || ''}〜${it.endTime || ''}` : `${it.date}`;
+  const meta = [esc(it.sitterName || '')];
+  if (it.status === 'deferred' && d) meta.push(`${fmtSlash(addMonthsUtc(d, -2))} から申請可能`);
+  if (it.statusText) meta.push(`状態: ${esc(it.statusText)}`);
+  if (it.issueId) meta.push(`issue ${esc(it.issueId)}`);
+  node.innerHTML = `<div class="when">${esc(when)}</div><div class="meta">${meta.join(' ・ ')}</div>`;
+  const btns = document.createElement('div');
+  btns.className = 'row-btns';
+  if (it.status === 'ready') {
+    const fill = document.createElement('button');
+    fill.className = 'inline-btn';
+    fill.type = 'button';
+    fill.textContent = 'フォームに入力';
+    fill.addEventListener('click', async () => {
+      const tabId = await activeSmartsitterTabId();
+      const spec = { profileId: it.profileId, sitterName: it.sitterName, date: it.date, startTime: it.startTime, endTime: it.endTime };
+      const ok = await openApplyForm(spec, { tabId, note: (m, e) => setCardStatus(node, m, e) });
+      if (ok) { await upsertQueueItem(spec, 'ready'); await renderQueue(); }
+    });
+    btns.appendChild(fill);
+  }
+  if (it.issueId) {
+    const open = document.createElement('button');
+    open.className = 'inline-btn';
+    open.type = 'button';
+    open.textContent = '依頼を開く';
+    open.addEventListener('click', () => chrome.tabs.create({ url: `https://smartsitter.jp/parent/sitting/issues/${it.issueId}` }));
+    btns.appendChild(open);
+  }
+  const del = document.createElement('button');
+  del.className = 'inline-btn';
+  del.type = 'button';
+  del.textContent = '削除';
+  del.addEventListener('click', async () => { await deleteQueueItem(it.key); await renderQueue(); });
+  btns.appendChild(del);
+  node.appendChild(btns);
+  return node;
+}
+
+async function refreshQueueStatuses() {
+  $('queueStatus').textContent = '更新中...';
+  $('refreshQueue').disabled = true;
+  try {
+    let items = null;
+    let warnings = [];
+    const tabId = await activeSmartsitterTabId();
+    if (tabId) {
+      try {
+        const r = await sendToTab(tabId, 'assistant_poll_issues');
+        items = r.items || [];
+        warnings = r.warnings || [];
+      } catch (_) {}
+    }
+    const res = await chrome.runtime.sendMessage({ type: 'apply_poll', payload: { items } });
+    await renderQueue();
+    if (!res?.ok) throw new Error(res?.error || '更新に失敗');
+    if (warnings.length) {
+      $('applyWarn').hidden = false;
+      $('applyWarn').textContent = warnings.join('\n');
+      $('queueStatus').textContent = '一部取得に警告があります';
+    } else {
+      $('queueStatus').textContent = `更新しました ${new Date().toLocaleTimeString('ja-JP')}`;
+    }
+  } catch (e) {
+    $('queueStatus').textContent = e.message || '更新に失敗';
+  } finally {
+    $('refreshQueue').disabled = false;
+  }
+}
+
+
 function wire() {
   wireTabs();
   wireChips();
@@ -416,8 +742,13 @@ function wire() {
   $('saveSitter').addEventListener('click', saveSitter);
   $('saveSettings').addEventListener('click', saveSettings);
   $('gcalConnect').addEventListener('click', connectGcal);
+  $('extractApplications').addEventListener('click', runExtractApplications);
+  $('refreshQueue').addEventListener('click', refreshQueueStatuses);
+  const applyTab = document.querySelector('[data-pane="apply"]');
+  if (applyTab) applyTab.addEventListener('click', renderQueue);
 }
 
 wire();
 loadSettings();
 refreshState();
+renderQueue();

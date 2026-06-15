@@ -1,30 +1,37 @@
-# ポピンズ返信アシスタント v0.4
+# ポピンズ返信アシスタント v0.6
 
-ポピンズシッター（SmartSitter）のメッセージ返信を、**シッティング履歴・今後の予定・シッター個別メモ・家庭の暗黙ルール・スケジュール方針・（任意で）Googleカレンダーの空き**を文脈にして OpenRouter で下書きする個人用 Chrome 拡張。送信は必ず自分で行う（下書きまで）。
+ポピンズシッター（SmartSitter）のメッセージ返信の下書きに加え、**チャット合意からのシステム申請（依頼）半自動化・申請予約キュー・申請後の状態追跡**を行う個人用 Chrome 拡張。送信・依頼の最終操作は必ず自分で行う（人間確認つきRPA）。
 
-## ファイル配置（重要）
+## v0.6 の主な変更（申請アシスタント Level 3 + Phase 2）
 
-manifest は `src/` 配下を参照します。ビルド不要。配置はこの通り：
+- **申請予約キュー（永続）**。候補を「予約に入れる／追跡に追加」で `applyQueue` に保存。2か月超の予定も保持し、申請可能日になったら拾う。
+- **申請可能の通知（Phase 2）**。`chrome.alarms`（既定6時間ごと、Chrome起動中に発火）で予約を点検し、`今日+2か月`の窓に入った予定を Chrome 通知でお知らせ（`deferred → ready`）。
+- **申請後の状態追跡（Level 3）**。`/parent/issues` を照合してキュー各件の状態（`見積り待ち / 要対応 / 確定 / キャンセル`）と issueId を更新。**「要対応（見積もり到着）」になったら24時間以内の確定を促す通知**。
+- **状態更新の2経路**：side panel の「予約・状態を更新」（SmartSitterタブがあれば同一オリジンで取得＝確実）と、バックグラウンドの定期取得（タブ不要の認証付き取得＋offscreen文書でHTMLパース）。
+- 申請タブに**予約・追跡一覧**を追加（要確定 / 申請可能 / 予約中 / 申請済み・見積り待ち / 確定 / キャンセル）。各件に「フォームに入力 / 依頼を開く / 削除」。
+- manifest 権限に `alarms / notifications / offscreen` を追加。`src/offscreen.{html,js}` を追加（service worker に DOMParser が無いため、一覧HTMLのパースだけをoffscreen文書で実施）。
 
-```
-poppins-automation/
-  manifest.json
-  README.md
-  package.json
-  assets/
-    icon.svg
-    icon16.png
-    icon32.png
-    icon48.png
-    icon128.png
-  src/
-    background.js     # 特権処理（OpenRouter / GCal / storage 仲介 / 秘密のロック）
-    content.js        # メッセージ室のDOM読取・入力欄挿入・ワンクリック生成
-    settings.html     # side panel / options（作成・シッター・設定）
-    settings.js
-  tests/
-    extension.test.mjs
-```
+> 注: 一覧ステータスのキーワード判定（特に「要対応＝保護者の確定が必要」）は、実データに合わせて `classifyIssueStatus` の調整が必要な場合があります。バックグラウンドの認証付き取得が失敗しても、SmartSitterタブを開いた状態の「予約・状態を更新」で確実に追跡できます。
+
+## v0.5 の主な変更（申請アシスタント Level 1–2）
+
+- **申請タブを追加**。メッセージ室のチャットから「申請候補」を抽出し、`要確認（2か月以内） / まだ申請不可（2か月超） / 既に依頼あり / 除外` に分類して表示（Level 1・ドライラン）。
+- **抽出は decision 付き**（agreed / candidate / declined / pending）。チャットで「見送り」になった日も**除外として明示**し、黙って落とさない。
+- **2か月ローリング窓**で申請可否を判定（`今日+2か月`まで）。2か月超は「◯/◯から申請可能」を表示。
+- **既存依頼との重複チェック**（進行中/確定の同一日を「既に依頼あり」に分類）。
+- **Level 2：実フォーム自動入力**。「フォームに入力」で `/parent/sitting/issues/new?date=&start=&end=&sitter_id=` を開き（住所・子ども・料金はSmartSitter側が補完）、「今回伝えておきたいこと」を下書き、**送信はあなたが実フォームで実行**。拡張は `#js-submit-button` を自動クリックしない。
+- **申請フォームに確認バナー**を表示（予定の要約、`前回交通費と同じなら見積もり不要`がONなら警告、送信は手動である旨）。
+- **sitter_id の解決**：メッセージ室には申請用 `sitter_id` が無いため、プロフィールページから解決して `profileId` をキーに記憶（取得できなければ一度だけURLを貼付け）。以後は自動。
+- content script の注入対象に申請フォーム（`/parent/sitting/issues/new*`）を追加。storage allowlist に `applyQueue / pendingApply / sitterid:*` を追加。
+
+### 申請の安全則（v0.5）
+
+- 常に**SmartSitterの実フォーム**を操作し、POSTは合成しない（CSRF・料金見積もり・同意・バリデーションを壊さない）。
+- **2段階確認**：申請タブで候補を選ぶ → 実フォームで内容・料金を見て自分で「依頼する」。
+- `前回交通費と同じなら見積もり不要`（`#issue_auto_book_transport_fee`）は触らない（既定OFF）。ONだと自動確定に近づくため警告のみ表示。
+- 一括申請はしない（1件ずつ実フォームで確認）。LLMは抽出・分類のみ、実行判断はルール＋人。
+- 申請後は `見積り待ち → 見積もり確認 → 依頼確定` と進む（保護者の確定が別途必要）。v0.6 ではこの後段を `applyQueue` と `/parent/issues` 照合で追跡する。
+- フォームを開いただけでは `applied` にしない。実際の依頼一覧に同一シッター・同一日・同一時間の依頼が見つかった時だけ申請済みとして扱う。
 
 ## v0.4 の主な変更（UI/UX改善）
 
@@ -90,6 +97,9 @@ poppins-automation/
 | `sitter:{id}` | name / honorific / priorityRank / note |
 | `memory:{id}` | roomSummary / sitterFacts / pendingSchedule |
 | `sittingsCache` | 履歴+予定のパース結果（10分キャッシュ） |
+| `sitterid:{profileId}` | 申請用 `sitter_id`（プロフィールページ解決 or 手動貼付け） |
+| `pendingApply` | 申請フォームへの受け渡し（日時・シッター・下書き文。フォーム到達で消費） |
+| `applyQueue` | 申請キュー（予約・追跡。`deferred/ready/applied/needs_confirm/booked/canceled`） |
 
 storage は信頼コンテキスト限定。content script は background 経由でallowlist化されたキーだけ読み書きし、`settings` を読む場合も APIキー / Googleトークン / トークン期限は除外される。Google Calendarの接続状態表示はside panel側で判定する。ページや第三者スクリプトから秘密情報へは到達しない。
 

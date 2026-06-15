@@ -11,7 +11,7 @@ const assertFile = (path) => assert.ok(existsSync(join(root, path)), `${path} sh
 const manifest = JSON.parse(read('manifest.json'));
 
 assert.equal(manifest.manifest_version, 3);
-assert.equal(manifest.version, '0.4.0');
+assert.equal(manifest.version, '0.6.0');
 assert.equal(manifest.background?.type, 'module');
 assertFile(manifest.background.service_worker);
 assertFile(manifest.options_ui.page);
@@ -26,17 +26,23 @@ for (const size of ['16', '32', '48', '128']) {
 for (const script of manifest.content_scripts ?? []) {
   for (const js of script.js ?? []) assertFile(js);
 }
-assert.deepEqual(manifest.content_scripts?.[0]?.matches, ['https://smartsitter.jp/parent/message_rooms*']);
+assert.deepEqual(manifest.content_scripts?.[0]?.matches, [
+  'https://smartsitter.jp/parent/message_rooms*',
+  'https://smartsitter.jp/parent/sitting/issues/new*'
+]);
 
 for (const host of ['https://smartsitter.jp/*', 'https://openrouter.ai/*', 'https://www.googleapis.com/*']) {
   assert.ok(manifest.host_permissions.includes(host), `missing host permission: ${host}`);
 }
 
-for (const permission of ['storage', 'unlimitedStorage', 'identity', 'sidePanel']) {
+for (const permission of ['storage', 'unlimitedStorage', 'identity', 'sidePanel', 'alarms', 'notifications', 'offscreen']) {
   assert.ok(manifest.permissions.includes(permission), `missing permission: ${permission}`);
 }
 
-for (const path of ['src/background.js', 'src/content.js', 'src/settings.js']) {
+assertFile('src/offscreen.html');
+assertFile('src/offscreen.js');
+
+for (const path of ['src/background.js', 'src/content.js', 'src/settings.js', 'src/offscreen.js']) {
   execFileSync(process.execPath, ['--check', join(root, path)], { stdio: 'pipe' });
 }
 
@@ -70,6 +76,15 @@ assert.match(content, /MEMORY_RESPONSE_SCHEMA/);
 assert.match(content, /todayJstDate/);
 assert.match(content, /futureWindowDaysFromText/);
 assert.match(content, /unknown message/);
+assert.match(content, /assistant_extract_applications/);
+assert.match(content, /assistant_resolve_sitter_id/);
+assert.match(content, /assistant_poll_issues/);
+assert.match(content, /APPLICATION_RESPONSE_SCHEMA/);
+assert.match(content, /initApplyForm/);
+assert.match(content, /pendingApply/);
+assert.match(content, /Date\.now\(\) - pending\.createdAt < 30 \* 60 \* 1000/);
+assert.match(content, /String\(pending\.start \|\| ''\) === String\(urlStart \|\| ''\)/);
+assert.doesNotMatch(content, /js-submit-button[^]{0,200}\.click\(\)/, 'must never auto-click the application submit button');
 
 const background = read('src/background.js');
 assert.match(background, /setAccessLevel/);
@@ -80,6 +95,21 @@ assert.match(background, /canContentWrite/);
 assert.match(background, /fetchWithTimeout/);
 assert.match(background, /response_format/);
 assert.match(background, /open_panel/);
+assert.match(background, /pendingApply/);
+assert.match(background, /sitterid:/);
+assert.match(background, /chrome\.alarms/);
+assert.match(background, /runApplyPoll/);
+assert.match(background, /reconcileQueue/);
+assert.match(background, /chrome\.notifications/);
+assert.match(background, /ensureOffscreen/);
+assert.match(background, /apply_poll/);
+assert.ok(background.indexOf('要対応|見積もり確認|確定待ち') < background.indexOf('確定|成立|booked|charged'), 'needs-confirm classification must run before booked');
+assert.match(background, /itemTimeMatches/);
+
+const offscreen = read('src/offscreen.js');
+assert.match(offscreen, /DOMParser/);
+assert.match(offscreen, /parse_issues/);
+assert.match(offscreen, /requested-item/);
 
 const settings = read('src/settings.js');
 assert.match(settings, /makeBinding/);
@@ -88,5 +118,20 @@ assert.match(settings, /renderSignals/);
 assert.match(settings, /gcalStatusFromSettings/);
 assert.match(settings, /tabs\.onActivated/);
 assert.match(settings, /保存する候補を選択/);
+assert.match(settings, /runExtractApplications/);
+assert.match(settings, /classifyCandidate/);
+assert.match(settings, /pendingApply/);
+assert.match(settings, /sitting\/issues\/new/);
+assert.match(settings, /renderQueue/);
+assert.match(settings, /upsertQueueItem/);
+assert.match(settings, /refreshQueueStatuses/);
+assert.match(settings, /applyQueue/);
+assert.match(settings, /cand\.decision !== 'agreed'/);
+assert.doesNotMatch(settings, /upsertQueueItem\(spec, 'applied'\)/, 'opening the application form must not mark queue items as applied');
+
+assert.match(html, /data-pane="apply"/);
+assert.match(html, /extractApplications/);
+assert.match(html, /refreshQueue/);
+assert.match(html, /applyQueueOut/);
 
 console.log('extension manifest and scripts are valid');

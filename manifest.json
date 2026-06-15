@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "ポピンズ返信アシスタント",
-  "version": "0.4.0",
-  "description": "ポピンズシッター（SmartSitter）のメッセージ返信を、履歴・予定・個別メモ・暗黙ルール・スケジュール方針・Googleカレンダーの空きを文脈にしてOpenRouterで下書きする個人用ツール。",
-  "permissions": ["storage", "unlimitedStorage", "identity", "sidePanel"],
+  "version": "0.6.0",
+  "description": "ポピンズシッター（SmartSitter）のメッセージ返信の下書きと、チャット合意からのシステム申請（依頼）半自動化・申請予約キュー・状態追跡を行う個人用ツール。",
+  "permissions": ["storage", "unlimitedStorage", "identity", "sidePanel", "alarms", "notifications", "offscreen"],
   "host_permissions": [
     "https://smartsitter.jp/*",
     "https://openrouter.ai/*",
@@ -18,7 +18,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://smartsitter.jp/parent/message_rooms*"],
+      "matches": [
+        "https://smartsitter.jp/parent/message_rooms*",
+        "https://smartsitter.jp/parent/sitting/issues/new*"
+      ],
       "js": ["src/content.js"],
       "run_at": "document_idle"
     }
