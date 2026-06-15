@@ -1,9 +1,10 @@
-// background.js v0.4 — 特権処理の集約（service worker / trusted context）。
+// background.js v0.6 — 特権処理の集約（service worker / trusted context）。
 //  (1) storage を TRUSTED_CONTEXTS にロック（content script から直接読めなくする）
 //  (2) storage 仲介（store_get / store_set）: content script はここ経由でのみ storage に触る
 //  (3) OpenRouter 呼び出し（APIキーはここでしか読まない）
 //  (4) Google Calendar（任意）: launchWebAuthFlow + freebusy
 //  (5) side panel / options を開く
+//  (6) 申請キュー / 状態追跡 / 通知
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GCAL_FREEBUSY = 'https://www.googleapis.com/calendar/v3/freeBusy';
@@ -38,7 +39,12 @@ function stripContentSecrets(data) {
 
 function canContentWrite(obj) {
   return Object.keys(obj || {}).every((key) => (
-    key === 'sittingsCache' || key.startsWith('sitter:') || key.startsWith('memory:')
+    key === 'sittingsCache'
+    || key === 'applyQueue'
+    || key === 'pendingApply'
+    || key.startsWith('sitter:')
+    || key.startsWith('sitterid:')
+    || key.startsWith('memory:')
   ));
 }
 
@@ -56,7 +62,10 @@ function canContentRead(keys) {
     || key === 'libraryMd'
     || key === 'schedulingMd'
     || key === 'sittingsCache'
+    || key === 'applyQueue'
+    || key === 'pendingApply'
     || key.startsWith('sitter:')
+    || key.startsWith('sitterid:')
     || key.startsWith('memory:')
   ));
 }
@@ -157,7 +166,154 @@ async function gcalFreebusy({ timeMin, timeMax, calendarId }) {
   } catch (e) { return { ok: false, error: String(e?.message || e) }; }
 }
 
+// ===== 申請キュー / 状態追跡（Level 3）＋ 申請可能通知（Phase 2） =====
+const APPLY_ALARM = 'poppins-apply-poll';
+const ISSUE_LIST_URL = 'https://smartsitter.jp/parent/issues';
+
+function tokyoTodayUtc() {
+  const s = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+function addMonthsUtc(date, n) { const x = new Date(date); x.setUTCMonth(x.getUTCMonth() + n); return x; }
+function jaDateToIso(s) {
+  const m = (s || '').match(/(\d{4})年(\d{2})月(\d{2})日/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : '';
+}
+const normName = (s) => (s || '').replace(/\s/g, '');
+
+async function getQueue() { return (await chrome.storage.local.get('applyQueue')).applyQueue || []; }
+async function setQueue(q) { await chrome.storage.local.set({ applyQueue: q }); }
+
+// 一覧の status から内部状態を判定（キーワードはライブで要調整の可能性あり）
+function classifyIssueStatus(it) {
+  const s = `${it.status || ''} ${it.statusClass || ''}`;
+  if (/canceled|キャンセル/.test(s)) return 'canceled';
+  if (/要対応|見積もり確認|確定待ち/.test(s)) return 'needs_confirm';
+  if (/確定|成立|booked|charged/.test(s)) return 'booked';
+  if (/見積/.test(s)) return 'applied';
+  return null;
+}
+
+function normTime(s) {
+  return String(s || '').replace(/[^\d]/g, '').slice(0, 4);
+}
+
+function itemTimeMatches(issue, queued) {
+  const range = String(issue.timeRange || '');
+  const parts = range.match(/(\d{1,2})[:：]?(\d{2})/g) || [];
+  if (parts.length < 2) return false;
+  const start = normTime(parts[0]);
+  const end = normTime(parts[1]);
+  return start === normTime(queued.start || queued.startTime) && end === normTime(queued.end || queued.endTime);
+}
+
+// --- offscreen 文書でHTMLをパース（service workerにDOMParserが無いため）---
+let creatingOffscreen = null;
+async function ensureOffscreen() {
+  try { if (await chrome.offscreen.hasDocument()) return; } catch (_) {}
+  if (creatingOffscreen) { await creatingOffscreen; return; }
+  try {
+    creatingOffscreen = chrome.offscreen.createDocument({
+      url: 'src/offscreen.html',
+      reasons: ['DOM_PARSER'],
+      justification: 'Parse SmartSitter issue-list HTML for application status tracking.'
+    });
+    await creatingOffscreen;
+  } catch (_) {} finally { creatingOffscreen = null; }
+}
+async function parseIssuesHtml(html) {
+  await ensureOffscreen();
+  try {
+    return (await chrome.runtime.sendMessage({ target: 'offscreen', type: 'parse_issues', html })) || { ok: false, items: [] };
+  } catch (e) { return { ok: false, error: String(e?.message || e), items: [] }; }
+}
+async function fetchIssuesItems() {
+  try {
+    const res = await fetch(ISSUE_LIST_URL, { credentials: 'include' });
+    if (!res.ok) return { ok: false, items: [] };
+    return await parseIssuesHtml(await res.text());
+  } catch (e) { return { ok: false, error: String(e?.message || e), items: [] }; }
+}
+
+// queue を一覧パース結果と現在日で照合・更新。notify=true で通知。
+async function reconcileQueue(items, { notify = false } = {}) {
+  const q = await getQueue();
+  if (!q.length) return q;
+  const today = tokyoTodayUtc();
+  const windowEnd = addMonthsUtc(today, 2);
+  const becameReady = [];
+  const needConfirm = [];
+
+  for (const it of q) {
+    if (it.status === 'deferred') {
+      const d = it.date ? new Date(`${it.date}T00:00:00Z`) : null;
+      if (d && d >= today && d <= windowEnd) {
+        it.status = 'ready'; it.updatedAt = Date.now();
+        if (!it.notifiedReady) { becameReady.push(it); it.notifiedReady = true; }
+      }
+    }
+  }
+  if (Array.isArray(items) && items.length) {
+    for (const it of q) {
+      if (it.status === 'booked' || it.status === 'canceled') continue;
+      const matches = items.filter((x) => (
+        normName(x.sitterName) === normName(it.sitterName)
+        && jaDateToIso(x.date) === it.date
+        && itemTimeMatches(x, it)
+      ));
+      const match = matches.length === 1 ? matches[0] : null;
+      if (!match) continue;
+      it.issueId = match.issueId || it.issueId;
+      it.statusText = match.status || it.statusText;
+      const cls = classifyIssueStatus(match);
+      if (cls && cls !== it.status) { it.status = cls; it.updatedAt = Date.now(); }
+      if (it.status === 'needs_confirm' && !it.notifiedConfirm) { needConfirm.push(it); it.notifiedConfirm = true; }
+    }
+  }
+  await setQueue(q);
+  if (notify) {
+    if (becameReady.length) notifyApply('ready', becameReady);
+    if (needConfirm.length) notifyApply('confirm', needConfirm);
+  }
+  return q;
+}
+
+async function runApplyPoll({ items, notify = false } = {}) {
+  let list = items;
+  if (!Array.isArray(list)) {
+    const fetched = await fetchIssuesItems();
+    if (!fetched.ok) return { ok: false, error: fetched.error || (fetched.login ? 'SmartSitterへのログインが必要です。' : '依頼一覧を取得できませんでした。'), queue: await getQueue() };
+    list = fetched.items || [];
+  }
+  return { ok: true, queue: await reconcileQueue(list, { notify }) };
+}
+
+function notifyApply(kind, items) {
+  const n = items.length;
+  try {
+    chrome.notifications.create(`poppins-${kind}-${Date.now()}`, {
+      type: 'basic',
+      iconUrl: 'assets/icon128.png',
+      title: kind === 'ready' ? '申請可能になりました' : '依頼の確定が必要です',
+      message: kind === 'ready'
+        ? `${n}件が2か月以内に入りました。SmartSitterで申請できます。`
+        : `${n}件の見積もりが届いています。24時間以内に依頼を確定してください。`,
+      priority: 2
+    });
+  } catch (_) {}
+}
+
+function setupApplyAlarm() { try { chrome.alarms.create(APPLY_ALARM, { periodInMinutes: 360, delayInMinutes: 1 }); } catch (_) {} }
+chrome.runtime.onInstalled.addListener(setupApplyAlarm);
+chrome.runtime.onStartup.addListener(() => { setupApplyAlarm(); runApplyPoll({ notify: true }); });
+try {
+  chrome.alarms.onAlarm.addListener((a) => { if (a.name === APPLY_ALARM) runApplyPoll({ notify: true }); });
+  chrome.notifications.onClicked.addListener((id) => { if (String(id).startsWith('poppins-')) chrome.tabs.create({ url: ISSUE_LIST_URL }); });
+} catch (_) {}
+
 chrome.runtime.onMessage.addListener((req, sender, send) => {
+  if (req?.target === 'offscreen') return false; // offscreen 文書が処理する
   (async () => {
     switch (req?.type) {
       case 'store_get': {
@@ -177,6 +333,7 @@ chrome.runtime.onMessage.addListener((req, sender, send) => {
       case 'gcal_connect': return send(await gcalConnect());
       case 'gcal_freebusy': return send(await gcalFreebusy(req.payload || {}));
       case 'gcal_redirect': return send({ ok: true, redirect: redirectUrl() });
+      case 'apply_poll': return send(await runApplyPoll({ items: req.payload?.items, notify: false }));
       case 'open_panel':
         try {
           if (sender?.tab?.id) await chrome.sidePanel.open({ tabId: sender.tab.id });

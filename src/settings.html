@@ -47,7 +47,7 @@
   .sub { color: var(--muted); font-size: 11px; margin-top: 3px; }
   .tabs {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 4px;
     padding: 8px 10px;
     border-bottom: 1px solid var(--line);
@@ -217,6 +217,15 @@
   .mem h5 { margin: 0 0 6px; font-size: 11px; color: var(--muted); font-weight: 800; }
   .mem .opt { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; margin: 8px 0; color: #26312e; }
   .mem textarea { min-height: 44px; margin-top: 4px; font-size: 12px; }
+  .apply-group { margin-top: 14px; }
+  .apply-group > h4 { margin: 0 0 6px; font-size: 11px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .apply-item { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 8px; background: var(--panel); }
+  .apply-item.excluded { background: #fbf6f5; border-color: #ecd3cf; }
+  .apply-item.deferred { background: #fbfaf4; border-color: #e7e2c8; }
+  .apply-item .when { font-weight: 800; font-size: 13px; }
+  .apply-item .ev { font-size: 11px; color: var(--faint); margin-top: 3px; overflow-wrap: anywhere; }
+  .apply-item .meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .apply-item .row-btns { margin-top: 8px; }
   details { margin-top: 10px; }
   summary { cursor: pointer; font-size: 12px; color: var(--muted); }
   .context-details {
@@ -280,6 +289,7 @@
 
     <div class="tabs">
       <button class="tab active" data-pane="compose">作成</button>
+      <button class="tab" data-pane="apply">申請</button>
       <button class="tab" data-pane="sitter">シッター</button>
       <button class="tab" data-pane="settings">設定</button>
     </div>
@@ -322,6 +332,25 @@
           <button class="btn ghost" id="updateMemory" type="button">記憶を更新</button>
           <span class="muted" id="memoryStatus"></span>
         </div>
+      </section>
+
+      <section class="pane" id="pane-apply">
+        <div class="status" id="applyHead">メッセージ室を開いて「申請候補を抽出」してください。</div>
+        <div class="warn" id="applyWarn" hidden></div>
+        <div class="section">
+          <div class="settings-action-row">
+            <button class="btn ghost" id="refreshQueue" type="button">予約・状態を更新</button>
+            <span class="muted" id="queueStatus"></span>
+          </div>
+          <div id="applyQueueOut"><div class="muted">予約・追跡はまだありません。</div></div>
+        </div>
+        <div class="section">
+          <div class="muted" style="margin-bottom:8px">チャットでの合意から申請候補を抽出します。送信は必ずSmartSitterの実フォームであなたが行います（拡張は送信しません）。</div>
+          <div class="actions">
+            <button class="btn primary" id="extractApplications" type="button">このチャットから申請候補を抽出</button>
+          </div>
+        </div>
+        <div id="applyOut"></div>
       </section>
 
       <section class="pane" id="pane-sitter">
