@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>返信アシスタント</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0;
+    background: #fbfbf9;
+    color: #1c2426;
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  .shell { min-height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 14px 16px 8px; border-bottom: 1px solid #e6e3da; }
+  h1 { font-size: 16px; margin: 0; }
+  .sub { color: #6a716e; font-size: 12px; margin-top: 2px; }
+  .tabs { display: flex; border-bottom: 1px solid #e6e3da; background: #fbfbf9; position: sticky; top: 0; z-index: 2; }
+  .tab { flex: 1; padding: 10px 4px; border: none; background: none; cursor: pointer; font-size: 12px; color: #6a716e; border-bottom: 2px solid transparent; }
+  .tab.active { color: #16707a; border-bottom-color: #16707a; font-weight: 700; }
+  main { flex: 1; overflow: auto; padding: 14px; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+  fieldset { border: 1px solid #e6e3da; border-radius: 8px; margin: 0 0 14px; padding: 12px 14px; background: #fffdf8; }
+  legend { font-size: 12px; color: #16707a; font-weight: 700; padding: 0 6px; }
+  label { display: block; font-size: 11px; color: #6a716e; margin: 10px 0 4px; }
+  textarea, input {
+    width: 100%;
+    border: 1px solid #cfd6d3;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+    background: #fff;
+    color: #1c2426;
+    resize: vertical;
+  }
+  input[type=checkbox] { width: auto; }
+  textarea { min-height: 70px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 120px; }
+  .btn { border: none; border-radius: 8px; padding: 9px 12px; font: 700 13px/1 inherit; cursor: pointer; }
+  .btn.primary { background: #16707a; color: #fff; }
+  .btn.primary:hover { background: #0f5b63; }
+  .btn.ghost { background: #eef1ef; color: #26312e; }
+  .btn.ghost:hover { background: #e3e8e5; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .muted { color: #8a908d; font-size: 12px; }
+  .status { font-size: 12px; color: #3a4744; background: #eef4f3; border: 1px solid #d8e4e1; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+  .signals { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+  .signal { border: 1px solid #e0ddd3; background: #fff; border-radius: 8px; padding: 7px 8px; min-height: 48px; }
+  .signal b { display: block; color: #6a716e; font-size: 10px; line-height: 1.2; margin-bottom: 2px; }
+  .signal span { display: block; color: #26312e; font-size: 12px; line-height: 1.35; overflow-wrap: anywhere; }
+  .signal.ok { border-color: #c8dedb; background: #f4fbf9; }
+  .signal.warn-signal { border-color: #f0dcae; background: #fff8e8; }
+  .warn { color: #9a5b00; font-size: 12px; background: #fff6e6; border: 1px solid #f0dcae; border-radius: 8px; padding: 7px 10px; margin-top: 8px; }
+  .err { color: #a3372b; font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { border: 1px solid #cfd6d3; background: #fff; border-radius: 999px; padding: 5px 10px; font-size: 12px; cursor: pointer; color: #26312e; }
+  .chip:hover, .chip.active { border-color: #16707a; color: #16707a; }
+  .draft { border: 1px solid #e0ddd3; background: #fff; border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+  .draft .lbl { font-size: 11px; font-weight: 700; color: #16707a; }
+  .draft .why { font-size: 11px; color: #8a908d; margin: 2px 0 6px; }
+  .draft .text { white-space: pre-wrap; font-size: 13px; }
+  .inline-btn { border: 1px solid #16707a; color: #16707a; background: #fff; border-radius: 6px; padding: 5px 10px; font: 700 12px/1 inherit; cursor: pointer; margin: 8px 8px 0 0; }
+  .mem { border: 1px dashed #cdd6d3; border-radius: 8px; padding: 8px 10px; margin-top: 10px; }
+  .mem h5 { margin: 0 0 6px; font-size: 11px; color: #6a716e; font-weight: 700; }
+  .mem .opt { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; margin: 4px 0; color: #26312e; }
+  .mem textarea { min-height: 44px; margin-top: 4px; font-size: 12px; }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; font-size: 12px; color: #6a716e; }
+  pre.ctx { white-space: pre-wrap; font: 11px/1.5 ui-monospace, monospace; background: #23302f; color: #cfe3df; padding: 10px; border-radius: 8px; max-height: 300px; overflow: auto; }
+  .bar { position: sticky; bottom: 0; background: #fbfbf9; padding: 10px 0 0; display: flex; gap: 10px; align-items: center; }
+  code { background: #eef1ef; padding: 1px 5px; border-radius: 4px; font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <h1>返信アシスタント</h1>
+      <div class="sub">SmartSitterのメッセージ室を開いた状態で使います。</div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab active" data-pane="compose">作成</button>
+      <button class="tab" data-pane="sitter">シッター</button>
+      <button class="tab" data-pane="settings">設定</button>
+    </div>
+
+    <main>
+      <section class="pane active" id="pane-compose">
+        <div class="status" id="pageStatus">現在のページを確認中...</div>
+        <div class="signals" id="stateSignals">
+          <div class="signal"><b>最終メッセージ</b><span id="sigLastMessage">-</span></div>
+          <div class="signal"><b>入力欄</b><span id="sigDraft">-</span></div>
+          <div class="signal"><b>履歴/予定</b><span id="sigSittings">-</span></div>
+          <div class="signal"><b>Google Calendar</b><span id="sigGcal">-</span></div>
+        </div>
+        <div class="chips" id="chips"></div>
+        <label>意図 / 依頼（空でも文脈から判断します）</label>
+        <textarea id="intent" placeholder="例）来週火曜の代わりに翌週へ振り替えできるか丁寧に聞いて"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="btn primary" id="generate" type="button">下書きを生成</button>
+          <button class="btn ghost" id="generateAuto" type="button">自動判断</button>
+          <button class="btn ghost" id="refreshState" type="button">再読込</button>
+        </div>
+        <div id="composeOut"></div>
+        <details>
+          <summary>送信する文脈をプレビュー</summary>
+          <pre class="ctx" id="contextPreview"></pre>
+        </details>
+        <div class="row" style="margin-top:10px">
+          <button class="btn ghost" id="updateMemory" type="button">記憶を更新</button>
+          <span class="muted" id="memoryStatus"></span>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-sitter">
+        <div class="status" id="sitterHead">シッター未特定</div>
+        <div class="row">
+          <div><label>呼び方（敬称）</label><input id="honorific" placeholder="例）西村様"></div>
+          <div style="max-width:110px"><label>内部優先度</label><input id="priorityRank" type="number" min="1" placeholder="1"></div>
+        </div>
+        <label>個別メモ</label>
+        <textarea id="sitterNote" placeholder="例）午前希望／返信は当日中／柔らかい文面を好む"></textarea>
+        <fieldset style="margin-top:14px">
+          <legend>記憶</legend>
+          <label>会話の流れ</label><textarea id="memRoom"></textarea>
+          <label>シッターの事実</label><textarea id="memFacts"></textarea>
+          <label>未確定・返答待ち</label><textarea id="memPending"></textarea>
+        </fieldset>
+        <div class="bar">
+          <button class="btn primary" id="saveSitter" type="button">保存</button>
+          <span class="muted" id="sitterInfo"></span>
+        </div>
+      </section>
+
+      <section class="pane" id="pane-settings">
+        <fieldset>
+          <legend>モデル / API</legend>
+          <label>OpenRouter APIキー</label>
+          <input id="apiKey" type="password" placeholder="sk-or-...">
+          <div class="row">
+            <div><label>モデル</label><input id="model" placeholder="google/gemini-3.1-pro-preview"></div>
+            <div style="max-width:90px"><label>候補数</label><input id="draftCount" type="number" min="1" max="3"></div>
+            <div style="max-width:90px"><label>温度</label><input id="temperature" type="number" min="0" max="1" step="0.1"></div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>文体</legend>
+          <label>文体方針</label><textarea id="replyStyle"></textarea>
+          <label>署名（任意・本文末尾）</label><input id="signature" placeholder="例）平川">
+        </fieldset>
+
+        <fieldset>
+          <legend>ルール（生成時に常に参照）</legend>
+          <label>スケジュール方針（md）</label><textarea id="schedulingMd" style="min-height:140px"></textarea>
+          <label>家庭・家・暗黙ルール（Obsidian の md を貼り付け）</label><textarea id="libraryMd" style="min-height:160px"></textarea>
+        </fieldset>
+
+        <fieldset>
+          <legend>Google Calendar 連携（任意）</legend>
+          <div class="muted">自分の仕事/家族予定の「埋まり時間帯」（freebusy）を文脈に追加します。</div>
+          <label><input type="checkbox" id="gcalEnabled"> 連携を有効にする</label>
+          <label>OAuth クライアントID（種類: ウェブアプリケーション）</label>
+          <input id="gcalClientId" placeholder="xxxx.apps.googleusercontent.com">
+          <label>カレンダーID</label><input id="gcalCalendarId" placeholder="primary">
+          <div class="row" style="margin-top:10px">
+            <button class="btn ghost" id="gcalConnect" type="button" style="flex:0">Google を接続</button>
+            <span class="muted" id="gcalStatus"></span>
+          </div>
+          <div class="muted" style="margin-top:8px">承認済みリダイレクトURIに登録: <code id="gcalRedirect">...</code></div>
+        </fieldset>
+
+        <div class="bar">
+          <button class="btn primary" id="saveSettings" type="button">保存</button>
+          <span class="muted" id="saved"></span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="settings.js"></script>
+</body>
+</html>

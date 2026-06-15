@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "ポピンズ返信アシスタント",
+  "version": "0.4.0",
+  "description": "ポピンズシッター（SmartSitter）のメッセージ返信を、履歴・予定・個別メモ・暗黙ルール・スケジュール方針・Googleカレンダーの空きを文脈にしてOpenRouterで下書きする個人用ツール。",
+  "permissions": ["storage", "unlimitedStorage", "identity", "sidePanel"],
+  "host_permissions": [
+    "https://smartsitter.jp/*",
+    "https://openrouter.ai/*",
+    "https://www.googleapis.com/*"
+  ],
+  "background": { "service_worker": "src/background.js", "type": "module" },
+  "icons": {
+    "16": "assets/icon16.png",
+    "32": "assets/icon32.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://smartsitter.jp/parent/message_rooms*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "返信アシスタントを開く",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "32": "assets/icon32.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
+  },
+  "options_ui": { "page": "src/settings.html", "open_in_tab": true },
+  "side_panel": { "default_path": "src/settings.html" }
+}

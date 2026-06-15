@@ -1,0 +1,13 @@
+{
+  "name": "poppins-automation",
+  "version": "0.4.0",
+  "private": true,
+  "description": "Personal Chrome extension for drafting SmartSitter/Poppins replies with OpenRouter context packs.",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/extension.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
