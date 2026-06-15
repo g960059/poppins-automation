@@ -1,4 +1,4 @@
-// content.js v0.3 — ページ側（自己完結 / ビルド不要）。
+// content.js v0.4 — ページ側（自己完結 / ビルド不要）。
 //  設定UIは拡張ページ（options/side panel）へ移設。秘密情報はページに置かない。
 //  storage は background 仲介（TRUSTED_CONTEXTS ロックのため content から直接触らない）。
 (() => {
@@ -13,11 +13,20 @@
   const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
   const clip = (s, n) => (s && s.length > n ? s.slice(0, n) + '…' : s || '');
   const WD = ['日', '月', '火', '水', '木', '金', '土'];
+  const DAY_MS = 86400000;
 
   // storage は background 経由（content から直接 chrome.storage は触らない）
   const store = {
-    async get(keys) { const r = await chrome.runtime.sendMessage({ type: 'store_get', keys }); return r?.data || {}; },
-    async set(obj) { return chrome.runtime.sendMessage({ type: 'store_set', obj }); }
+    async get(keys) {
+      const r = await chrome.runtime.sendMessage({ type: 'store_get', keys });
+      if (!r?.ok) throw new Error(r?.error || 'storage の読み取りに失敗しました。');
+      return r.data || {};
+    },
+    async set(obj) {
+      const r = await chrome.runtime.sendMessage({ type: 'store_set', obj });
+      if (!r?.ok) throw new Error(r?.error || 'storage の書き込みに失敗しました。');
+      return r;
+    }
   };
 
   const DEFAULT_SCHEDULING_MD = [
@@ -31,9 +40,81 @@
     '- 確定できる日時は明確に書く。未確定なら「確認します」ではなく、判断に必要な情報を短く聞く。'
   ].join('\n');
   const DEFAULT_STYLE = '丁寧だが冗長すぎない敬語。要点を先に。相手の負担を増やさない。絵文字は使わない。';
+  const REPLY_RESPONSE_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['situation', 'drafts', 'warnings', 'memoryUpdateCandidates'],
+    properties: {
+      situation: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['summary', 'replyType', 'needsScheduleCommitment'],
+        properties: {
+          summary: { type: 'string' },
+          replyType: { type: 'string', enum: ['thanks', 'confirm', 'propose', 'accept', 'decline', 'wait', 'other'] },
+          needsScheduleCommitment: { type: 'boolean' }
+        }
+      },
+      drafts: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['label', 'text', 'why'],
+          properties: {
+            label: { type: 'string' },
+            text: { type: 'string' },
+            why: { type: 'string' }
+          }
+        }
+      },
+      warnings: { type: 'array', items: { type: 'string' } },
+      memoryUpdateCandidates: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['type', 'text'],
+          properties: {
+            type: { type: 'string', enum: ['sitter_fact', 'pending_schedule', 'room'] },
+            text: { type: 'string' }
+          }
+        }
+      }
+    }
+  };
+  const MEMORY_RESPONSE_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['roomSummary', 'sitterFacts', 'pendingSchedule'],
+    properties: {
+      roomSummary: { type: 'string' },
+      sitterFacts: { type: 'string' },
+      pendingSchedule: { type: 'string' }
+    }
+  };
 
   function nowJst() {
     return new Intl.DateTimeFormat('ja-JP', { timeZone: 'Asia/Tokyo', dateStyle: 'full', timeStyle: 'short' }).format(new Date());
+  }
+  function jstParts(date = new Date()) {
+    const parts = new Intl.DateTimeFormat('ja-JP', {
+      timeZone: 'Asia/Tokyo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(date);
+    return {
+      year: Number(parts.find((p) => p.type === 'year')?.value),
+      month: Number(parts.find((p) => p.type === 'month')?.value),
+      day: Number(parts.find((p) => p.type === 'day')?.value)
+    };
+  }
+  function todayJstDate() {
+    const { year, month, day } = jstParts();
+    return new Date(Date.UTC(year, month - 1, day));
   }
 
   // ===== ページ判定 / シッター識別 =====
@@ -99,7 +180,7 @@
   }
   function parseSittingDate(s) {
     const m = (s || '').match(/(\d{4})年(\d{2})月(\d{2})日/);
-    return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+    return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
   }
   function pageLabel(path) {
     return path.includes('histories') ? '過去の依頼' : '進行中の依頼';
@@ -155,26 +236,50 @@
   const norm = (s) => (s || '').replace(/\s/g, '');
   const isActive = (i) => !/canceled/.test(i.statusClass) && i.status !== 'キャンセル';
   function fmtSit(i) {
-    const d = parseSittingDate(i.date); const wd = d ? `(${WD[d.getDay()]})` : '';
+    const d = parseSittingDate(i.date); const wd = d ? `(${weekdayJst(d)})` : '';
     return `${i.date.replace(/\(.\)/, '')}${wd} ${i.timeRange} ${i.type}（${i.status}）`;
   }
+  function weekdayJst(date) {
+    return WD[date.getUTCDay()];
+  }
+  function futureWindowDaysFromText(text, baseDays) {
+    const today = todayJstDate();
+    const current = jstParts();
+    let maxDays = baseDays;
+    const seen = new Set();
+    const addMonth = (year, month) => {
+      if (!(month >= 1 && month <= 12)) return;
+      let y = year || current.year;
+      if (!year && month < current.month) y += 1;
+      const key = `${y}-${month}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const endOfMonth = new Date(Date.UTC(y, month, 0));
+      const days = Math.ceil((endOfMonth - today) / DAY_MS);
+      if (days > maxDays) maxDays = Math.min(days, 180);
+    };
+    for (const m of String(text || '').matchAll(/(?:(\d{4})年\s*)?(\d{1,2})月/g)) {
+      addMonth(m[1] ? Number(m[1]) : null, Number(m[2]));
+    }
+    return maxDays;
+  }
   // 昨日/今日/明日はキャンセルを除外（「昨日ありがとうございました」誤爆防止）
-  function relevantSittings(items, sitterName) {
-    const t = new Date(); const today = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  function relevantSittings(items, sitterName, futureDays = 45) {
+    const today = todayJstDate();
     const mine = items.filter((i) => norm(i.sitterName) === norm(sitterName)).filter(isActive)
       .map((i) => ({ ...i, _d: parseSittingDate(i.date) })).filter((i) => i._d).sort((a, b) => a._d - b._d);
-    const diff = (i) => Math.round((i._d - today) / 86400000);
+    const diff = (i) => Math.round((i._d - today) / DAY_MS);
     const pick = (lo, hi) => mine.filter((i) => diff(i) >= lo && diff(i) <= hi);
-    return { yesterday: pick(-1, -1), today: pick(0, 0), tomorrow: pick(1, 1), recentPast: pick(-14, -2).slice(-3), nearFuture: pick(2, 45).slice(0, 4) };
+    return { yesterday: pick(-1, -1), today: pick(0, 0), tomorrow: pick(1, 1), recentPast: pick(-14, -2).slice(-3), nearFuture: pick(2, futureDays).slice(0, 6) };
   }
   // 他シッター含む確定予定（重複提案回避）。相談系は窓を広げる。
   function overallConfirmed(items, days) {
-    const t = new Date(); const today = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+    const today = todayJstDate();
     return items.map((i) => ({ ...i, _d: parseSittingDate(i.date) }))
       .filter((i) => i._d && /booked/.test(i.statusClass))
-      .filter((i) => { const dd = Math.round((i._d - today) / 86400000); return dd >= 0 && dd <= days; })
+      .filter((i) => { const dd = Math.round((i._d - today) / DAY_MS); return dd >= 0 && dd <= days; })
       .sort((a, b) => a._d - b._d).slice(0, 20)
-      .map((i) => `${i._d.getMonth() + 1}/${i._d.getDate()}(${WD[i._d.getDay()]}) ${i.timeRange} ${i.sitterName}`);
+      .map((i) => `${i._d.getUTCMonth() + 1}/${i._d.getUTCDate()}(${weekdayJst(i._d)}) ${i.timeRange} ${i.sitterName}`);
   }
 
   // ===== メモリ（3分割） =====
@@ -218,11 +323,13 @@
     let rel = { yesterday: [], today: [], tomorrow: [], recentPast: [], nearFuture: [] }, overall = [];
     const localWarnings = [];
     const wide = ['askAvailability', 'followUp'].includes(shortcut);
+    const dateHintText = [intent, currentDraftText(), transcript.map((m) => m.text).join('\n')].filter(Boolean).join('\n');
+    const futureDays = futureWindowDaysFromText(dateHintText, wide ? 90 : 45);
     try {
       const fetched = await fetchSittings();
       localWarnings.push(...(fetched.warnings || []));
-      rel = relevantSittings(fetched.items || [], ctx.sitterName);
-      overall = overallConfirmed(fetched.items || [], wide ? 90 : 45);
+      rel = relevantSittings(fetched.items || [], ctx.sitterName, futureDays);
+      overall = overallConfirmed(fetched.items || [], futureDays);
     } catch (e) {
       localWarnings.push(`シッティング履歴・予定の取得に失敗しました（${e?.message || e}）。`);
     }
@@ -261,7 +368,7 @@
     if (relLines.length) B.push('【このシッターのシッティング（日付は当方で確定計算・キャンセル除外）】\n' + relLines.join('\n'));
     if (localWarnings.length) B.push('【文脈取得ステータス】\n' + localWarnings.map((w) => `- ${w}`).join('\n') + '\n※上記のため、履歴・予定文脈が不完全な可能性があります。不足がある前提で断定を避けてください。');
     B.push(`【全体のスケジュール方針】\n${schedulingMd}`);
-    if (overall.length) B.push(`【他シッター含む 確定予定（重複提案を避ける用・${wide ? '90' : '45'}日）】\n` + overall.join('\n'));
+    if (overall.length) B.push(`【他シッター含む 確定予定（重複提案を避ける用・${futureDays}日）】\n` + overall.join('\n'));
     if (libraryMd.trim()) B.push(`【家庭・家・暗黙ルール（参考データ）】\n${libraryMd}`);
     if (busy) B.push(`【自分の予定（Googleカレンダーの埋まり時間帯）】\n${busy}`);
     const intentLine = shortcut && shortcut !== 'auto' ? `ショートカット: ${shortcut}\n補足: ${intent || '(なし)'}` : (intent ? intent : '（意図の明示なし。文脈から最も自然な次の一手を判断）');
@@ -278,8 +385,8 @@
     return { messages: [{ role: 'system', content: sys }, { role: 'user', content: B.join('\n\n') }], preview: B.join('\n\n'), localWarnings };
   }
 
-  async function callLLM(messages, { temperature } = {}) {
-    const r = await chrome.runtime.sendMessage({ type: 'llm', payload: { messages, temperature } });
+  async function callLLM(messages, { temperature, responseSchema, schemaName } = {}) {
+    const r = await chrome.runtime.sendMessage({ type: 'llm', payload: { messages, temperature, responseSchema, schemaName } });
     if (!r) throw new Error('background から応答がありません（拡張を再読み込みしてください）');
     if (!r.ok) throw new Error(r.error || '生成に失敗しました');
     return r.text;
@@ -302,7 +409,11 @@
       `【既存メモ】\nroomSummary: ${prev.roomSummary}\nsitterFacts: ${prev.sitterFacts}\npendingSchedule: ${prev.pendingSchedule}`,
       '【最近の会話】\n' + transcript.map((m) => `${m.role === 'me' ? '自分' : 'シッター'}: ${m.text}`).join('\n')
     ].join('\n\n');
-    const out = parseModelJson(await callLLM([{ role: 'system', content: sys }, { role: 'user', content: user }], { temperature: 0.2 }));
+    const out = parseModelJson(await callLLM([{ role: 'system', content: sys }, { role: 'user', content: user }], {
+      temperature: 0.2,
+      responseSchema: MEMORY_RESPONSE_SCHEMA,
+      schemaName: 'poppins_memory_update'
+    }));
     const next = {
       roomSummary: out?.roomSummary ?? prev.roomSummary, sitterFacts: out?.sitterFacts ?? prev.sitterFacts,
       pendingSchedule: out?.pendingSchedule ?? prev.pendingSchedule, lastId: transcript.length ? transcript[transcript.length - 1].id : prev.lastId
@@ -331,7 +442,7 @@
         memoryUpdatedAt: memory.updatedAt || null,
         sittingsCacheAt: sittingsCache?.fetchedAt || null,
         sittingsWarnings: sittingsCache?.warnings || [],
-        gcal: settings.gcalEnabled ? (settings.gcalTokenExp > Date.now() ? '接続済み' : '要再接続') : '未使用'
+        gcal: settings.gcalEnabled ? '有効' : '未使用'
       }
     };
   }
@@ -376,7 +487,10 @@
     ctx = detectContext();
     if (ctx.page !== 'room') throw new Error('SmartSitterのメッセージ室を開いてください。');
     const { messages, preview, localWarnings } = await assemble({ intent, shortcut, ctx });
-    const raw = await callLLM(messages);
+    const raw = await callLLM(messages, {
+      responseSchema: REPLY_RESPONSE_SCHEMA,
+      schemaName: 'poppins_reply_draft'
+    });
     const parsed = parseModelJson(raw);
     return {
       data: parsed || { drafts: [{ label: '下書き', text: raw.trim(), why: '' }] },
@@ -409,7 +523,7 @@
                 req.payload?.selectedIndexes ?? req.selectedIndexes
               )
             });
-          default: return undefined;
+          default: return send({ ok: false, error: 'unknown message' });
         }
       } catch (e) {
         return send({ ok: false, error: e?.message || String(e) });
@@ -467,7 +581,7 @@
 
   function confirmOneClickDraft({ draft, localWarnings, modelWarnings, situation }) {
     if (localWarnings?.length) {
-      alert(`履歴・予定の取得に警告があります。\n\n${localWarnings.join('\n')}\n\nside panelの作成タブで文脈を確認してから生成してください。`);
+      alert(`履歴・予定の取得に警告があります。\n\n${localWarnings.join('\n')}\n\n拡張の作成タブで文脈を確認してから生成してください。`);
       chrome.runtime.sendMessage({ type: 'open_panel' });
       return false;
     }
@@ -505,7 +619,10 @@
       try {
         ctx = detectContext();
         const { messages, localWarnings } = await assemble({ shortcut: 'auto', ctx });
-        const raw = await callLLM(messages);
+        const raw = await callLLM(messages, {
+          responseSchema: REPLY_RESPONSE_SCHEMA,
+          schemaName: 'poppins_reply_draft'
+        });
         const parsed = parseModelJson(raw);
         const draft = parsed?.drafts?.[0]?.text || raw.trim();
         if (confirmOneClickDraft({

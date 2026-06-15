@@ -65,18 +65,28 @@ assert.match(content, /assertExpectedContext/);
 assert.match(content, /置換/);
 assert.match(content, /末尾に追記/);
 assert.match(content, /open_panel/);
+assert.match(content, /REPLY_RESPONSE_SCHEMA/);
+assert.match(content, /MEMORY_RESPONSE_SCHEMA/);
+assert.match(content, /todayJstDate/);
+assert.match(content, /futureWindowDaysFromText/);
+assert.match(content, /unknown message/);
 
 const background = read('src/background.js');
 assert.match(background, /setAccessLevel/);
 assert.match(background, /TRUSTED_CONTEXTS/);
 assert.match(background, /stripContentSecrets/);
+assert.match(background, /canContentRead/);
 assert.match(background, /canContentWrite/);
+assert.match(background, /fetchWithTimeout/);
+assert.match(background, /response_format/);
 assert.match(background, /open_panel/);
 
 const settings = read('src/settings.js');
 assert.match(settings, /makeBinding/);
 assert.match(settings, /expectedContext/);
 assert.match(settings, /renderSignals/);
+assert.match(settings, /gcalStatusFromSettings/);
+assert.match(settings, /tabs\.onActivated/);
 assert.match(settings, /保存する候補を選択/);
 
 console.log('extension manifest and scripts are valid');

@@ -1,4 +1,4 @@
-// background.js v0.3 — 特権処理の集約（service worker / trusted context）。
+// background.js v0.4 — 特権処理の集約（service worker / trusted context）。
 //  (1) storage を TRUSTED_CONTEXTS にロック（content script から直接読めなくする）
 //  (2) storage 仲介（store_get / store_set）: content script はここ経由でのみ storage に触る
 //  (3) OpenRouter 呼び出し（APIキーはここでしか読まない）
@@ -9,6 +9,7 @@ const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const GCAL_FREEBUSY = 'https://www.googleapis.com/calendar/v3/freeBusy';
 const GCAL_SCOPE = 'https://www.googleapis.com/auth/calendar.readonly';
 const DEFAULT_MODEL = 'google/gemini-3.1-pro-preview';
+const OPENROUTER_TIMEOUT_MS = 60000;
 
 // --- storage を信頼コンテキスト限定に（ページ/コンテンツから秘密へ到達させない）---
 async function lockStorage() {
@@ -41,8 +42,42 @@ function canContentWrite(obj) {
   ));
 }
 
+function normalizeKeys(keys) {
+  if (Array.isArray(keys)) return keys;
+  if (typeof keys === 'string') return [keys];
+  if (keys && typeof keys === 'object') return Object.keys(keys);
+  return [];
+}
+
+function canContentRead(keys) {
+  const list = normalizeKeys(keys);
+  return list.length > 0 && list.every((key) => (
+    key === 'settings'
+    || key === 'libraryMd'
+    || key === 'schedulingMd'
+    || key === 'sittingsCache'
+    || key.startsWith('sitter:')
+    || key.startsWith('memory:')
+  ));
+}
+
+async function fetchWithTimeout(url, options, timeoutMs = OPENROUTER_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function structuredOutputError(status, data) {
+  const msg = String(data?.error?.message || data?.message || '');
+  return status >= 400 && /response_format|json_schema|structured|schema/i.test(msg);
+}
+
 // --- OpenRouter ---
-async function callOpenRouter({ messages, temperature }) {
+async function callOpenRouter({ messages, temperature, responseSchema, schemaName }) {
   const s = await getSettings();
   if (!s.apiKey) return { ok: false, error: 'APIキーが未設定です。side panel の「設定」タブでOpenRouterのキーを入力してください。' };
   const t = Number.parseFloat(temperature ?? s.temperature);
@@ -51,8 +86,18 @@ async function callOpenRouter({ messages, temperature }) {
     messages,
     temperature: Number.isFinite(t) ? Math.min(Math.max(t, 0), 1) : 0.5
   };
-  try {
-    const res = await fetch(OPENROUTER_URL, {
+  if (responseSchema) {
+    body.response_format = {
+      type: 'json_schema',
+      json_schema: {
+        name: schemaName || 'poppins_reply',
+        strict: true,
+        schema: responseSchema
+      }
+    };
+  }
+  const request = async (requestBody) => {
+    const res = await fetchWithTimeout(OPENROUTER_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -60,12 +105,23 @@ async function callOpenRouter({ messages, temperature }) {
         'HTTP-Referer': 'https://smartsitter.jp/',
         'X-Title': 'Poppins Reply Assistant'
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(requestBody)
     });
     const data = await res.json().catch(() => ({}));
+    return { res, data };
+  };
+  try {
+    let { res, data } = await request(body);
+    if (!res.ok && body.response_format && structuredOutputError(res.status, data)) {
+      const { response_format: _responseFormat, ...fallbackBody } = body;
+      ({ res, data } = await request(fallbackBody));
+    }
     if (!res.ok) return { ok: false, error: data?.error?.message || `OpenRouter エラー (${res.status})` };
     return { ok: true, text: data?.choices?.[0]?.message?.content ?? '', model: body.model };
-  } catch (e) { return { ok: false, error: String(e?.message || e) }; }
+  } catch (e) {
+    const timeout = e?.name === 'AbortError' ? 'OpenRouterの応答がタイムアウトしました。時間をおいて再試行してください。' : null;
+    return { ok: false, error: timeout || String(e?.message || e) };
+  }
 }
 
 // --- Google Calendar (任意) ---
@@ -105,6 +161,9 @@ chrome.runtime.onMessage.addListener((req, sender, send) => {
   (async () => {
     switch (req?.type) {
       case 'store_get': {
+        if (isContentScript(sender) && !canContentRead(req.keys)) {
+          return send({ ok: false, error: 'content script から読めないキーです。' });
+        }
         const data = await chrome.storage.local.get(req.keys);
         return send({ ok: true, data: isContentScript(sender) ? stripContentSecrets(data) : data });
       }

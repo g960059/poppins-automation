@@ -32,6 +32,8 @@ poppins-automation/
 - **既存入力の保護**: 入力欄が空でない場合、挿入時に `置換 / 末尾に追記 / キャンセル` を選択。挿入後は短時間だけ「元に戻す」を表示。
 - **ページ内AI下書きの確認フロー**: 送信ボタン横の「AI下書き」は即挿入せず、宛先・状況・下書きを確認してから挿入。履歴/予定取得に警告がある場合はside panelへ誘導。
 - **作成タブの優先順位整理**: 宛先確認と下書き生成を最上位に置き、履歴/予定やGoogle Calendarの異常だけを警告表示。最終メッセージ・入力欄・文脈状態は折りたたみで確認。
+- **信頼性強化**: OpenRouter structured outputs（非対応時は従来JSONパースへフォールバック）と60秒timeoutを追加。content script からの storage 読み取りもallowlist化。
+- **状態追従**: side panel はタブ/メッセージ室切替時に自動更新し、Google Calendarの接続状態は信頼コンテキスト側で判定。
 - **記憶候補の安全化**: 記憶候補は初期未選択にし、保存前に本文を編集可能。
 - **復帰導線**: 生成失敗時に設定タブ・Google再接続・再読込などの導線を表示。
 
@@ -67,7 +69,7 @@ poppins-automation/
 - 候補を「入力欄に挿入」（送信は自分で押す）。挿入前に電話番号/住所らしき表現があれば確認ダイアログ。
 - 入力欄に既存文章がある場合は、置換・追記・キャンセルを選ぶ。
 - 「記憶を更新」/「選択を記憶に保存」で 3分割メモリ（会話の流れ / シッターの事実 / 未確定）を育てる。
-- 依頼/履歴取得やGoogle Calendar再接続が必要な場合だけ、作成タブ上部に警告が出る。詳細は「文脈ステータス」で確認し、ログインし直すか、SmartSitterのメッセージ室を再読み込みする。
+- 依頼/履歴取得やGoogle Calendar接続が必要な場合だけ、作成タブ上部に警告が出る。詳細は「文脈ステータス」で確認し、ログインし直すか、SmartSitterのメッセージ室を再読み込みする。
 
 ## Google Calendar 連携（任意）
 
@@ -89,7 +91,7 @@ poppins-automation/
 | `memory:{id}` | roomSummary / sitterFacts / pendingSchedule |
 | `sittingsCache` | 履歴+予定のパース結果（10分キャッシュ） |
 
-storage は信頼コンテキスト限定。content script は background 経由で必要なキーだけ読み書きし、`settings` を読む場合も APIキー / Googleトークンは除外される。ページや第三者スクリプトから秘密情報へは到達しない。
+storage は信頼コンテキスト限定。content script は background 経由でallowlist化されたキーだけ読み書きし、`settings` を読む場合も APIキー / Googleトークン / トークン期限は除外される。Google Calendarの接続状態表示はside panel側で判定する。ページや第三者スクリプトから秘密情報へは到達しない。
 
 ## ローカル検証
 
@@ -105,6 +107,7 @@ npm test
 - content script の注入対象がメッセージ室だけであること。
 - side panel に作成・シッター・設定タブがあること。
 - 宛先ズレ防止の `expectedContext`、既存入力保護、作成タブの警告/文脈ステータス表示が実装されていること。
+- OpenRouter structured outputs、storage read/write allowlist、side panel自動更新の退行検知があること。
 - 秘密情報フィルタ、メモリ候補、Poppins主要セレクタが実装内に存在すること。
 
 ## セキュリティ注意

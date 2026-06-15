@@ -31,6 +31,7 @@ let selectedShortcut = '';
 let lastCandidates = [];
 let currentBinding = null;
 let lastResultBinding = null;
+let refreshTimer = null;
 
 async function activeTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -59,9 +60,24 @@ async function activeMessageRoomTab() {
 }
 
 async function sendToTab(tabId, type, payload = {}) {
-  const res = await chrome.tabs.sendMessage(tabId, { type, payload });
+  let res;
+  try {
+    res = await chrome.tabs.sendMessage(tabId, { type, payload });
+  } catch (e) {
+    const raw = String(e?.message || e || '');
+    if (/Could not establish connection|Receiving end does not exist/i.test(raw)) {
+      throw new Error('このタブで拡張がまだ読み込まれていません。SmartSitterのメッセージ室を再読み込みしてください。');
+    }
+    throw e;
+  }
   if (!res?.ok) throw new Error(res?.error || 'content scriptから応答がありません。拡張を再読み込みしてください。');
   return res;
+}
+
+function gcalStatusFromSettings(settings = {}) {
+  if (!settings.gcalEnabled) return '未使用';
+  if (settings.gcalToken && settings.gcalTokenExp > Date.now()) return '接続済み';
+  return settings.gcalToken ? '要再接続' : '未接続';
 }
 
 function setBusy(busy) {
@@ -102,6 +118,8 @@ async function refreshState() {
     const tab = await activeMessageRoomTab();
     const res = await sendToTab(tab.id, 'assistant_state');
     const { ctx, sitter, memory } = res.data;
+    const { settings = {} } = await chrome.storage.local.get('settings');
+    const status = { ...(res.data.status || {}), gcal: gcalStatusFromSettings(settings) };
     currentBinding = makeBinding(tab, ctx);
     $('pageStatus').textContent = ctx.page === 'room'
       ? `返信先: ${ctx.sitterName || '不明'}（room ${ctx.roomId || '-'}）`
@@ -114,13 +132,27 @@ async function refreshState() {
     $('memFacts').value = memory.sitterFacts || '';
     $('memPending').value = memory.pendingSchedule || '';
     $('memoryStatus').textContent = memory.updatedAt ? `最終更新 ${new Date(memory.updatedAt).toLocaleString('ja-JP')}` : '記憶 未作成';
-    renderSignals(res.data.status || {}, memory);
+    renderSignals(status, memory);
   } catch (e) {
     currentBinding = null;
     $('pageStatus').innerHTML = `<span class="err">${esc(e.message || e)}</span>`;
     $('sitterHead').textContent = 'シッター未特定';
     renderSignals({}, {});
   }
+}
+
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => { refreshState(); }, 250);
+}
+
+function wireTabRefresh() {
+  chrome.tabs.onActivated.addListener(scheduleRefresh);
+  chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
+    if (info.status === 'complete' && /^https:\/\/smartsitter\.jp\/parent\/message_rooms/.test(tab.url || '')) {
+      scheduleRefresh();
+    }
+  });
 }
 
 function setSignal(id, text, kind = '') {
@@ -136,8 +168,8 @@ function renderStateWarnings(status = {}) {
   if (status.sittingsWarnings?.length) {
     warnings.push(`履歴/予定の取得に警告があります（${status.sittingsWarnings.length}件）。必要なら文脈ステータスを確認してください。`);
   }
-  if (status.gcal === '要再接続') {
-    warnings.push('Google Calendar連携の再接続が必要です。カレンダー文脈なしで生成するか、設定タブで再接続してください。');
+  if (status.gcal === '要再接続' || status.gcal === '未接続') {
+    warnings.push('Google Calendar連携が未接続です。カレンダー文脈なしで生成するか、設定タブで接続してください。');
   }
   const box = $('stateWarnings');
   box.hidden = warnings.length === 0;
@@ -152,7 +184,7 @@ function renderSignals(status, memory) {
     ? `警告 ${status.sittingsWarnings.length}件`
     : (status.sittingsCacheAt ? `取得済み ${new Date(status.sittingsCacheAt).toLocaleTimeString('ja-JP')}` : '未取得');
   setSignal('sigSittings', sittingText, status.sittingsWarnings?.length ? 'warn' : (status.sittingsCacheAt ? 'ok' : ''));
-  setSignal('sigGcal', status.gcal || '未使用', status.gcal === '接続済み' ? 'ok' : (status.gcal === '要再接続' ? 'warn' : ''));
+  setSignal('sigGcal', status.gcal || '未使用', status.gcal === '接続済み' ? 'ok' : (status.gcal === '要再接続' || status.gcal === '未接続' ? 'warn' : ''));
   $('memoryStatus').textContent = memory.updatedAt ? `最終更新 ${new Date(memory.updatedAt).toLocaleString('ja-JP')}` : '記憶 未作成';
 }
 
@@ -169,7 +201,7 @@ async function loadSettings() {
   $('gcalEnabled').checked = !!settings.gcalEnabled;
   $('gcalClientId').value = settings.gcalClientId || '';
   $('gcalCalendarId').value = settings.gcalCalendarId || 'primary';
-  $('gcalStatus').textContent = settings.gcalToken && settings.gcalTokenExp > Date.now() ? '接続済み' : (settings.gcalToken ? '要再接続' : '未接続');
+  $('gcalStatus').textContent = gcalStatusFromSettings(settings);
   try {
     const r = await chrome.runtime.sendMessage({ type: 'gcal_redirect' });
     if (r?.ok) $('gcalRedirect').textContent = r.redirect;
@@ -370,11 +402,13 @@ async function connectGcal() {
   $('gcalStatus').textContent = '接続中...';
   const r = await chrome.runtime.sendMessage({ type: 'gcal_connect' });
   $('gcalStatus').textContent = r?.ok ? '接続済み' : (`失敗: ${r?.error || ''}`);
+  refreshState();
 }
 
 function wire() {
   wireTabs();
   wireChips();
+  wireTabRefresh();
   $('refreshState').addEventListener('click', refreshState);
   $('generate').addEventListener('click', () => generate(selectedShortcut || ''));
   $('generateAuto').addEventListener('click', () => generate('auto'));
